@@ -17,7 +17,7 @@ const agentTurnSchema = {
     offerTerms: {
       type: ["object", "null"],
       additionalProperties: false,
-      required: ["price"],
+      required: ["price", "deliveryDays", "returnPolicy", "notes"],
       properties: {
         price: { type: "number" },
         deliveryDays: { type: ["number", "null"] },

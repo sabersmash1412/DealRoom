@@ -1,4 +1,32 @@
-import { startTransition, useDeferredValue, useState } from 'react'
+import { startTransition, useDeferredValue, useEffect, useState } from 'react'
+import type { ReactNode } from 'react'
+import {
+  approveNegotiation,
+  createListing,
+  createNegotiationCampaign,
+  fetchBuyerProfile,
+  fetchListings,
+  fetchNegotiationBranch,
+  fetchNegotiations,
+  fetchSellerConfig,
+  getApiBaseUrl,
+  saveBuyerProfile,
+  saveSellerConfig,
+} from './lib/dealroomApi'
+import {
+  createPlaceholderNegotiation,
+  mapBranchToNegotiation,
+  mapListingViewToCard,
+  type AuditEvent,
+  type Listing,
+  type Negotiation,
+} from './lib/viewModels'
+import type {
+  BuyerAgentProfile,
+  CreateListingRequest,
+  NegotiationBranchView,
+  SellerAgentConfig,
+} from './shared/negotiation'
 
 type Screen =
   | 'home'
@@ -8,462 +36,74 @@ type Screen =
   | 'final'
   | 'audit'
 
-type Listing = {
-  id: string
-  title: string
-  category: string
-  price: number
-  seller: string
-  condition: string
-  location: string
-  shipping: string
-  trust: string
-  inventory: string
-  note: string
-  accent: 'indigo' | 'teal' | 'amber'
-}
-
-type Message = {
-  id: string
-  actor: string
-  side: 'buyer' | 'seller' | 'system' | 'verification'
-  type: 'offer' | 'counter' | 'status' | 'approval'
-  title: string
-  body: string
-  amount?: number
-  meta?: string[]
-}
-
-type TimelineEvent = {
-  id: string
-  time: string
-  title: string
-  detail: string
-  status: 'done' | 'active' | 'up-next'
-  kind: 'offer' | 'check' | 'approval' | 'delivery'
-}
-
-type AuditEvent = {
-  id: string
-  time: string
-  actor: string
-  action: string
-  evidence: string
-  result: 'Recorded' | 'Verified' | 'Needs review'
-  lane: 'Offers' | 'Verification' | 'Policy' | 'Approval'
-}
-
-type Negotiation = {
-  id: string
-  listingId: string
-  stage: string
-  status: 'Ready' | 'Waiting' | 'Hold'
-  askPrice: number
-  liveOffer: number
-  priceDelta: number
-  delivery: string
-  updatedAt: string
-  buyerGuardrail: string
-  sellerSignal: string
-  nextAction: string
-  summary: string
-  messages: Message[]
-  timeline: TimelineEvent[]
-  audit: AuditEvent[]
-  finalDeal: {
-    itemPrice: number
-    deliveryFee: number
-    protection: string
-    pickupWindow: string
-    inspection: string
-    seller: string
-  }
-}
+const BUYER_USER_ID = 'demo-buyer'
 
 const screenMeta: Array<{ id: Screen; label: string; badge?: string }> = [
   { id: 'home', label: 'Marketplace' },
   { id: 'agents', label: 'Agents' },
-  { id: 'negotiations', label: 'Negotiations', badge: '3' },
+  { id: 'negotiations', label: 'Negotiations' },
   { id: 'timeline', label: 'Workspace', badge: 'Live' },
   { id: 'final', label: 'Final deal' },
   { id: 'audit', label: 'Audit' },
 ]
 
-const listings: Listing[] = [
-  {
-    id: 'aeron',
-    title: 'Secretlab TITAN Evo 2022, SoftWeave charcoal',
-    category: 'Office',
-    price: 640,
-    seller: 'CityHall Studio',
-    condition: 'Very good',
-    location: 'Tanjong Pagar',
-    shipping: 'Self-collect or Lalamove',
-    trust: 'Receipt + seller ID verified',
-    inventory: '8 photos',
-    note: 'Includes magnetic head pillow and original receipt.',
-    accent: 'indigo',
+const defaultBuyerProfile: BuyerAgentProfile = {
+  userId: BUYER_USER_ID,
+  displayName: 'Demo Buyer',
+  utilityWeights: {
+    price: 0.55,
+    delivery: 0.25,
+    reputation: 0.1,
+    returns: 0.1,
   },
-  {
-    id: 'leica',
-    title: 'Fujifilm X100VI, local set with receipt',
-    category: 'Cameras',
-    price: 2550,
-    seller: 'Bishan Camera Club',
-    condition: 'Like new',
-    location: 'Bishan',
-    shipping: 'Meetup or insured courier',
-    trust: 'Warranty + shutter count checked',
-    inventory: '11 photos',
-    note: 'Low shutter count, local warranty registered, spare battery included.',
-    accent: 'teal',
+  reservationValue: {
+    maximumBudget: 1960,
   },
-  {
-    id: 'linea',
-    title: 'JURA E8 coffee machine, piano black',
-    category: 'Home appliances',
-    price: 1380,
-    seller: 'Holland Village Home',
-    condition: 'Great',
-    location: 'Queenstown',
-    shipping: 'Courier or self-collect',
-    trust: 'Service log included',
-    inventory: '6 photos',
-    note: 'Recently descaled, milk frother and water filter included.',
-    accent: 'amber',
+  strategy: 'balanced',
+  guardrails: [
+    'Keep a 24-hour inspection window.',
+    'Do not trade verified accessories.',
+    'Escalate if delivery slips past Wednesday.',
+  ],
+  preferences: {
+    targetPrice: 1825,
+    maxDeliveryDays: 3,
+    minimumSellerRating: 4,
+    preferredReturnPolicy: '14-day return policy',
   },
-  {
-    id: 'vitra',
-    title: 'PRISM+ X340 Pro ultrawide monitor, 34-inch',
-    category: 'Electronics',
-    price: 420,
-    seller: 'Bedok Tech Loft',
-    condition: 'Excellent',
-    location: 'Bedok',
-    shipping: 'Same-day courier',
-    trust: 'Dead pixel check passed',
-    inventory: '9 photos',
-    note: 'Stand, original box, and VESA mount kit included.',
-    accent: 'indigo',
-  },
-  {
-    id: 'pinarello',
-    title: 'Brompton C Line Explore, racing green',
-    category: 'Cycling',
-    price: 2450,
-    seller: 'East Coast Riders',
-    condition: 'Excellent',
-    location: 'Marine Parade',
-    shipping: 'MRT meetup or courier',
-    trust: 'Frame number validated',
-    inventory: '13 photos',
-    note: 'Brooks saddle, front carrier block, recently serviced.',
-    accent: 'teal',
-  },
-  {
-    id: 'modular',
-    title: 'MUJI oak dining table with 4 chairs',
-    category: 'Home',
-    price: 980,
-    seller: 'Serangoon North Home',
-    condition: 'Very good',
-    location: 'Serangoon',
-    shipping: 'Van delivery available',
-    trust: 'Seller + item photos checked',
-    inventory: '7 photos',
-    note: 'Solid oak top, light wear, chairs reupholstered last year.',
-    accent: 'amber',
-  },
-]
+}
 
-const negotiations: Negotiation[] = [
-  {
-    id: 'aeron',
-    listingId: 'aeron',
-    stage: 'Final seller response',
-    status: 'Ready',
-    askPrice: 640,
-    liveOffer: 560,
-    priceDelta: -80,
-    delivery: 'Lalamove delivery $25',
-    updatedAt: '2 min ago',
-    buyerGuardrail: 'Cap total at S$585.',
-    sellerSignal: 'Seller prefers Lalamove over self-collect.',
-    nextAction: 'Approve economics or reopen delivery.',
-    summary: 'Converged at S$560 + S$25 delivery.',
-    messages: [
-      {
-        id: 'm1',
-        actor: 'DealRoom',
-        side: 'system',
-        type: 'status',
-        title: 'Mandate loaded',
-        body: 'Budget, receipt verification, and delivery timing were imported from the listing flow.',
-        meta: ['Ask S$640', 'Target S$520–S$585'],
-      },
-      {
-        id: 'm2',
-        actor: 'Buyer agent',
-        side: 'buyer',
-        type: 'offer',
-        title: 'Opening offer',
-        body: 'Opened at S$520 with same-day PayNow and receipt verification.',
-        amount: 520,
-        meta: ['Self-collect preferred'],
-      },
-      {
-        id: 'm3',
-        actor: 'Seller agent',
-        side: 'seller',
-        type: 'counter',
-        title: 'Seller counter',
-        body: 'Seller replied at S$590 with delivery included.',
-        amount: 590,
-        meta: ['Weekend delivery possible'],
-      },
-      {
-        id: 'm4',
-        actor: 'Verification',
-        side: 'verification',
-        type: 'status',
-        title: 'Evidence passed',
-        body: 'Receipt, seller identity, and comparable listings all matched.',
-        meta: ['3 Carousell comps checked'],
-      },
-      {
-        id: 'm5',
-        actor: 'Buyer agent',
-        side: 'buyer',
-        type: 'offer',
-        title: 'Buyer revised',
-        body: 'Moved to S$550 with weekend delivery timing protection.',
-        amount: 550,
-        meta: ['Inspection retained'],
-      },
-      {
-        id: 'm6',
-        actor: 'Seller agent',
-        side: 'seller',
-        type: 'counter',
-        title: 'Seller midpoint',
-        body: 'Seller moved to S$570 and split delivery into its own line item.',
-        amount: 570,
-        meta: ['Head pillow kept'],
-      },
-      {
-        id: 'm7',
-        actor: 'DealRoom',
-        side: 'system',
-        type: 'approval',
-        title: 'Approval package',
-        body: 'Current close is S$560 + S$25 delivery. Guardrails still hold.',
-        meta: ['Total S$585', 'Hold expires in 4h'],
-      },
-    ],
-    timeline: [
-      {
-        id: 't1',
-        time: '09:14',
-        title: 'Imported',
-        detail: 'Started from listing.',
-        status: 'done',
-        kind: 'offer',
-      },
-      {
-        id: 't2',
-        time: '09:18',
-        title: 'Buyer opened',
-        detail: 'S$520 anchor sent.',
-        status: 'done',
-        kind: 'offer',
-      },
-      {
-        id: 't3',
-        time: '09:26',
-        title: 'Seller countered',
-        detail: 'S$590 with delivery.',
-        status: 'done',
-        kind: 'offer',
-      },
-      {
-        id: 't4',
-        time: '09:31',
-        title: 'Verification cleared',
-        detail: 'Receipt and comps matched.',
-        status: 'done',
-        kind: 'check',
-      },
-      {
-        id: 't5',
-        time: '09:37',
-        title: 'Buyer revised',
-        detail: 'S$550 with timing protection.',
-        status: 'done',
-        kind: 'offer',
-      },
-      {
-        id: 't6',
-        time: '09:43',
-        title: 'Seller midpoint',
-        detail: 'S$570 plus separate delivery.',
-        status: 'done',
-        kind: 'offer',
-      },
-      {
-        id: 't7',
-        time: '09:49',
-        title: 'Approval ready',
-        detail: 'S$560 + S$25 delivery.',
-        status: 'active',
-        kind: 'approval',
-      },
-      {
-        id: 't8',
-        time: '10:10',
-        title: 'Buyer deadline',
-        detail: 'Seller hold expires.',
-        status: 'up-next',
-        kind: 'delivery',
-      },
-    ],
-    audit: [
-      {
-        id: 'a1',
-        time: '09:14:03',
-        actor: 'Buyer agent',
-        action: 'Loaded mandate',
-        evidence: 'Listing card and saved price rules.',
-        result: 'Recorded',
-        lane: 'Policy',
-      },
-      {
-        id: 'a2',
-        time: '09:18:11',
-        actor: 'Buyer agent',
-        action: 'Submitted opening offer',
-        evidence: 'S$520 payload.',
-        result: 'Recorded',
-        lane: 'Offers',
-      },
-      {
-        id: 'a3',
-        time: '09:25:48',
-        actor: 'Seller agent',
-        action: 'Posted counteroffer',
-        evidence: 'S$590 with delivery.',
-        result: 'Recorded',
-        lane: 'Offers',
-      },
-      {
-        id: 'a4',
-        time: '09:31:20',
-        actor: 'Verification worker',
-        action: 'Checked evidence',
-        evidence: 'Receipt image, comps, seller ID hash.',
-        result: 'Verified',
-        lane: 'Verification',
-      },
-      {
-        id: 'a5',
-        time: '09:37:02',
-        actor: 'Buyer agent',
-        action: 'Updated offer',
-        evidence: 'S$550 plus delivery rule.',
-        result: 'Recorded',
-        lane: 'Offers',
-      },
-      {
-        id: 'a6',
-        time: '09:48:36',
-        actor: 'Policy engine',
-        action: 'Scored final terms',
-        evidence: 'Budget, delivery, inspection checks.',
-        result: 'Verified',
-        lane: 'Policy',
-      },
-      {
-        id: 'a7',
-        time: '09:49:15',
-        actor: 'DealRoom',
-        action: 'Prepared approval package',
-        evidence: 'Final item and delivery values.',
-        result: 'Recorded',
-        lane: 'Approval',
-      },
-      {
-        id: 'a8',
-        time: '09:49:22',
-        actor: 'DealRoom',
-        action: 'Requested human confirmation',
-        evidence: 'Approval timer and summary.',
-        result: 'Needs review',
-        lane: 'Approval',
-      },
-    ],
-    finalDeal: {
-      itemPrice: 560,
-      deliveryFee: 25,
-      protection: 'Buyer protection through confirmed delivery',
-      pickupWindow: 'Lalamove delivery by Saturday or self-collect fallback',
-      inspection: '24-hour inspection window',
-      seller: 'CityHall Studio / Tanjong Pagar',
-    },
+const defaultSellerConfig: SellerAgentConfig = {
+  utilityWeights: {
+    profitMargin: 0.6,
+    inventoryClearance: 0.25,
+    customerSatisfaction: 0.15,
   },
-  {
-    id: 'leica',
-    listingId: 'leica',
-    stage: 'Seller evaluating revised bundle',
-    status: 'Waiting',
-    askPrice: 2550,
-    liveOffer: 2360,
-    priceDelta: -190,
-    delivery: 'Insured courier S$18',
-    updatedAt: '18 min ago',
-    buyerGuardrail: 'Do not exceed S$2,420.',
-    sellerSignal: 'Seller is trading around accessories.',
-    nextAction: 'Wait for seller response.',
-    summary: 'Inside range, still accessory-led.',
-    messages: [],
-    timeline: [],
-    audit: [],
-    finalDeal: {
-      itemPrice: 2360,
-      deliveryFee: 18,
-      protection: 'Function check before release',
-      pickupWindow: 'Courier with signature or Bishan meetup',
-      inspection: '48-hour shutter and sensor verification',
-      seller: 'Bishan Camera Club / Bishan',
-    },
+  reservationValue: {
+    minimumAcceptablePrice: 1915,
   },
-  {
-    id: 'linea',
-    listingId: 'linea',
-    stage: 'Service records under review',
-    status: 'Hold',
-    askPrice: 1380,
-    liveOffer: 1240,
-    priceDelta: -140,
-    delivery: 'Courier quoted separately',
-    updatedAt: '44 min ago',
-    buyerGuardrail: 'Require signed service history.',
-    sellerSignal: 'Paperwork is incomplete.',
-    nextAction: 'Hold until maintenance evidence is complete.',
-    summary: 'Good economics, incomplete evidence.',
-    messages: [],
-    timeline: [],
-    audit: [],
-    finalDeal: {
-      itemPrice: 1240,
-      deliveryFee: 0,
-      protection: 'Funds held until service records are complete',
-      pickupWindow: 'Courier scheduling deferred',
-      inspection: 'Bench test required on arrival',
-      seller: 'Holland Village Home / Queenstown',
-    },
-  },
-]
+  strategy: 'balanced',
+  guardrails: [
+    'Keep included accessories in the quoted total.',
+    'Split delivery into a separate line item if needed.',
+    'Prefer pickup before further discounting.',
+  ],
+  inventoryPressure: 'medium',
+  customerSatisfactionTarget: 'medium',
+}
 
-const negotiationViewIds = new Set(['aeron', 'leica', 'linea'])
+const defaultListingForm = {
+  title: '',
+  description: '',
+  price: 0,
+  condition: 'Very good',
+  returnPolicy: '14-day return policy',
+  sellerName: '',
+  sellerRating: 4.8,
+  sellerMinPrice: 0,
+  sellerInventory: 1,
+  deliveryDays: 3,
+}
 
 const currency = new Intl.NumberFormat('en-US', {
   style: 'currency',
@@ -471,36 +111,310 @@ const currency = new Intl.NumberFormat('en-US', {
   maximumFractionDigits: 0,
 })
 
+function mergeBranches(
+  current: NegotiationBranchView[],
+  incoming: NegotiationBranchView[],
+) {
+  const byId = new Map(current.map((entry) => [entry.id, entry]))
+  for (const branch of incoming) {
+    byId.set(branch.id, branch)
+  }
+  return Array.from(byId.values()).sort((left, right) => {
+    const leftTime = new Date(
+      left.messages.at(-1)?.createdAt ?? left.auditEvents.at(-1)?.createdAt ?? 0,
+    ).getTime()
+    const rightTime = new Date(
+      right.messages.at(-1)?.createdAt ?? right.auditEvents.at(-1)?.createdAt ?? 0,
+    ).getTime()
+    return rightTime - leftTime
+  })
+}
+
+function listingIdForBranch(branches: NegotiationBranchView[], listingId: string) {
+  return branches.find((branch) => branch.listingId === listingId)
+}
+
 function App() {
-  const [activeScreen, setActiveScreen] = useState<Screen>('timeline')
-  const [activeNegotiationId, setActiveNegotiationId] = useState('aeron')
+  const [activeScreen, setActiveScreen] = useState<Screen>('home')
+  const [activeNegotiationId, setActiveNegotiationId] = useState<string | null>(null)
+  const [activeListingId, setActiveListingId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [buyerTarget, setBuyerTarget] = useState(1825)
-  const [buyerCap, setBuyerCap] = useState(1960)
-  const [sellerFloor, setSellerFloor] = useState(1915)
-  const [autoApprove, setAutoApprove] = useState(true)
+  const [buyerTarget, setBuyerTarget] = useState(defaultBuyerProfile.preferences?.targetPrice ?? 1825)
+  const [buyerCap, setBuyerCap] = useState(defaultBuyerProfile.reservationValue.maximumBudget)
+  const [sellerFloor, setSellerFloor] = useState(defaultSellerConfig.reservationValue.minimumAcceptablePrice)
+  const [autoApprove, setAutoApprove] = useState(false)
   const [draftInstruction, setDraftInstruction] = useState(
-    'Keep the current inspection window. Reopen only if delivery slips.',
+    'Backend uses saved buyer and seller configuration only. Refresh the branch after saving rule changes.',
   )
+  const [listings, setListings] = useState<Listing[]>([])
+  const [branches, setBranches] = useState<NegotiationBranchView[]>([])
+  const [buyerProfile, setBuyerProfile] = useState<BuyerAgentProfile>(defaultBuyerProfile)
+  const [sellerConfig, setSellerConfig] = useState<SellerAgentConfig>(defaultSellerConfig)
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSavingRules, setIsSavingRules] = useState(false)
+  const [isStartingNegotiation, setIsStartingNegotiation] = useState(false)
+  const [isApproving, setIsApproving] = useState(false)
+  const [isCreatingListing, setIsCreatingListing] = useState(false)
+  const [showListingForm, setShowListingForm] = useState(false)
+  const [listingForm, setListingForm] = useState(defaultListingForm)
+  const [errorMessage, setErrorMessage] = useState<string | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const deferredSearch = useDeferredValue(searchQuery)
 
-  const activeNegotiation =
-    negotiations.find((entry) => entry.id === activeNegotiationId) ?? negotiations[0]
-  const activeListing =
-    listings.find((entry) => entry.id === activeNegotiation.listingId) ?? listings[0]
+  useEffect(() => {
+    void loadInitialData()
+  }, [])
 
-  const filteredListings = listings.filter((listing) => {
-    const haystack =
-      `${listing.title} ${listing.category} ${listing.seller} ${listing.location}`.toLowerCase()
-    return haystack.includes(deferredSearch.toLowerCase())
-  })
+  useEffect(() => {
+    if (!activeListingId && listings.length > 0) {
+      setActiveListingId(listings[0].id)
+    }
+  }, [activeListingId, listings])
 
-  const filteredNegotiations = negotiations.filter((entry) => {
-    const listing = listings.find((candidate) => candidate.id === entry.listingId)
-    const haystack =
-      `${listing?.title ?? ''} ${entry.status} ${entry.stage}`.toLowerCase()
-    return haystack.includes(deferredSearch.toLowerCase())
-  })
+  useEffect(() => {
+    if (!activeNegotiationId && branches.length > 0) {
+      setActiveNegotiationId(branches[0].id)
+    }
+  }, [activeNegotiationId, branches])
+
+  useEffect(() => {
+    const listing = listings.find((entry) => entry.id === activeListingId)
+    if (!listing) {
+      return
+    }
+
+    void loadSellerConfig(listing.sellerId)
+  }, [activeListingId, listings])
+
+  useEffect(() => {
+    if (!activeNegotiationId) {
+      return
+    }
+
+    const eventSource = new EventSource(
+      `${getApiBaseUrl()}/api/negotiations/${activeNegotiationId}/stream`,
+    )
+
+    const refresh = () => {
+      void refreshNegotiation(activeNegotiationId)
+    }
+
+    eventSource.addEventListener('state', refresh)
+    eventSource.addEventListener('message', refresh)
+    eventSource.addEventListener('audit', refresh)
+    eventSource.addEventListener('completed', refresh)
+    eventSource.onerror = () => {
+      eventSource.close()
+    }
+
+    return () => {
+      eventSource.close()
+    }
+  }, [activeNegotiationId])
+
+  async function loadInitialData() {
+    setIsLoading(true)
+    setErrorMessage(null)
+
+    try {
+      const [listingViews, negotiationViews, savedBuyerProfile] = await Promise.all([
+        fetchListings(),
+        fetchNegotiations(),
+        fetchBuyerProfile(BUYER_USER_ID),
+      ])
+
+      const mappedListings = listingViews.map(mapListingViewToCard)
+      setListings(mappedListings)
+      setBranches(negotiationViews)
+
+      const profile = savedBuyerProfile ?? defaultBuyerProfile
+      setBuyerProfile(profile)
+      setBuyerTarget(profile.preferences?.targetPrice ?? defaultBuyerProfile.preferences?.targetPrice ?? 1825)
+      setBuyerCap(profile.reservationValue.maximumBudget)
+
+      if (mappedListings.length > 0) {
+        setActiveListingId(mappedListings[0].id)
+      }
+
+      if (negotiationViews.length > 0) {
+        setActiveNegotiationId(negotiationViews[0].id)
+        setActiveScreen('timeline')
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load DealRoom data.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  async function loadSellerConfig(sellerId: string) {
+    try {
+      const config = await fetchSellerConfig(sellerId)
+      setSellerConfig(config)
+      setSellerFloor(config.reservationValue.minimumAcceptablePrice)
+    } catch (error) {
+      setSellerConfig(defaultSellerConfig)
+      setSellerFloor(defaultSellerConfig.reservationValue.minimumAcceptablePrice)
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to load seller configuration.')
+    }
+  }
+
+  async function refreshNegotiation(negotiationId: string) {
+    try {
+      const branch = await fetchNegotiationBranch(negotiationId)
+      setBranches((current) => mergeBranches(current, [branch]))
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to refresh negotiation branch.')
+    }
+  }
+
+  async function handleSaveRules() {
+    const activeListing = listings.find((entry) => entry.id === activeListingId)
+    if (!activeListing) {
+      setErrorMessage('Choose a listing before saving rules.')
+      return
+    }
+
+    setIsSavingRules(true)
+    setErrorMessage(null)
+    setNotice(null)
+
+    const nextBuyerProfile: BuyerAgentProfile = {
+      ...buyerProfile,
+      userId: BUYER_USER_ID,
+      reservationValue: {
+        maximumBudget: buyerCap,
+      },
+      preferences: {
+        ...buyerProfile.preferences,
+        targetPrice: buyerTarget,
+      },
+    }
+
+    const nextSellerConfig: SellerAgentConfig = {
+      ...sellerConfig,
+      reservationValue: {
+        minimumAcceptablePrice: sellerFloor,
+      },
+    }
+
+    try {
+      const [savedBuyer, savedSeller] = await Promise.all([
+        saveBuyerProfile(nextBuyerProfile),
+        saveSellerConfig(activeListing.sellerId, nextSellerConfig),
+      ])
+
+      setBuyerProfile(savedBuyer)
+      setSellerConfig(savedSeller)
+      setNotice('Buyer and seller agent rules are saved to the backend.')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to save backend rules.')
+    } finally {
+      setIsSavingRules(false)
+    }
+  }
+
+  async function handleStartNegotiation(listing: Listing) {
+    setIsStartingNegotiation(true)
+    setErrorMessage(null)
+    setNotice(null)
+
+    const currentBuyerProfile: BuyerAgentProfile = {
+      ...buyerProfile,
+      userId: BUYER_USER_ID,
+      reservationValue: {
+        maximumBudget: buyerCap,
+      },
+      preferences: {
+        ...buyerProfile.preferences,
+        targetPrice: buyerTarget,
+      },
+    }
+
+    try {
+      const campaign = await createNegotiationCampaign({
+        buyerUserId: BUYER_USER_ID,
+        buyerProfile: currentBuyerProfile,
+        priority: 'high',
+        autoApprove,
+        targets: [
+          {
+            listingId: listing.id,
+            sellerId: listing.sellerId,
+          },
+        ],
+      })
+
+      setBranches((current) => mergeBranches(current, campaign.negotiations))
+      const branch = campaign.negotiations[0]
+      if (branch) {
+        setActiveNegotiationId(branch.id)
+        setActiveListingId(branch.listingId)
+        setActiveScreen('timeline')
+        setNotice(`Negotiation campaign ${campaign.campaignId} started.`)
+      }
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to start negotiation.')
+    } finally {
+      setIsStartingNegotiation(false)
+    }
+  }
+
+  async function handleApproveNegotiation() {
+    if (!activeNegotiationId) {
+      return
+    }
+
+    setIsApproving(true)
+    setErrorMessage(null)
+    setNotice(null)
+
+    try {
+      const approvedBranch = await approveNegotiation(activeNegotiationId)
+      setBranches((current) => mergeBranches(current, [approvedBranch]))
+      setNotice('Final deal approved and saved in the backend.')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to approve the final deal.')
+    } finally {
+      setIsApproving(false)
+    }
+  }
+
+  async function handleCreateListing() {
+    setIsCreatingListing(true)
+    setErrorMessage(null)
+    setNotice(null)
+
+    try {
+      const payload: CreateListingRequest = {
+        title: listingForm.title,
+        description: listingForm.description || null,
+        price: listingForm.price,
+        condition: listingForm.condition,
+        returnPolicy: listingForm.returnPolicy || null,
+        seller: {
+          name: listingForm.sellerName,
+          rating: listingForm.sellerRating,
+          minPrice: listingForm.sellerMinPrice || listingForm.price,
+          inventory: listingForm.sellerInventory,
+          deliveryDays: listingForm.deliveryDays,
+        },
+      }
+
+      const created = await createListing(payload)
+      const mapped = mapListingViewToCard(created)
+      setListings((current) => [mapped, ...current])
+      setActiveListingId(mapped.id)
+      setShowListingForm(false)
+      setListingForm(defaultListingForm)
+      setNotice(`Added ${created.title} from seller ${created.sellerName}.`)
+      goTo('home')
+    } catch (error) {
+      setErrorMessage(error instanceof Error ? error.message : 'Failed to create listing.')
+    } finally {
+      setIsCreatingListing(false)
+    }
+  }
 
   function goTo(screen: Screen) {
     startTransition(() => {
@@ -509,11 +423,61 @@ function App() {
   }
 
   function openNegotiation(negotiationId: string, screen: Screen = 'timeline') {
+    const branch = branches.find((entry) => entry.id === negotiationId)
     startTransition(() => {
       setActiveNegotiationId(negotiationId)
+      if (branch) {
+        setActiveListingId(branch.listingId)
+      }
       setActiveScreen(screen)
     })
   }
+
+  const allNegotiations = branches.map(mapBranchToNegotiation)
+  const activeBranch = activeNegotiationId
+    ? branches.find((entry) => entry.id === activeNegotiationId) ?? null
+    : null
+
+  const activeNegotiation = activeBranch
+    ? mapBranchToNegotiation(activeBranch)
+    : activeListingId
+      ? createPlaceholderNegotiation(
+          listings.find((entry) => entry.id === activeListingId) ?? listings[0],
+        )
+      : listings[0]
+        ? createPlaceholderNegotiation(listings[0])
+        : null
+
+  const activeListing = activeNegotiation
+    ? listings.find((entry) => entry.id === activeNegotiation.listingId) ??
+      listings.find((entry) => entry.id === activeListingId) ??
+      listings[0] ??
+      null
+    : listings.find((entry) => entry.id === activeListingId) ?? listings[0] ?? null
+
+  const featuredListing = activeListing ?? listings[0] ?? null
+  const featuredBranch = featuredListing
+    ? listingIdForBranch(branches, featuredListing.id)
+    : undefined
+
+  const filteredListings = listings.filter((listing) => {
+    const haystack =
+      `${listing.title} ${listing.category} ${listing.seller} ${listing.location}`.toLowerCase()
+    return haystack.includes(deferredSearch.toLowerCase())
+  })
+
+  const filteredNegotiations = allNegotiations.filter((entry) => {
+    const listing = listings.find((candidate) => candidate.id === entry.listingId)
+    const haystack =
+      `${listing?.title ?? ''} ${entry.status} ${entry.stage}`.toLowerCase()
+    return haystack.includes(deferredSearch.toLowerCase())
+  })
+
+  const onlineSellerCount = new Set(listings.map((listing) => listing.sellerId)).size
+  const negotiationListingIds = new Set(branches.map((branch) => branch.listingId))
+  const negotiationIdByListingId = new Map(
+    branches.map((branch) => [branch.listingId, branch.id]),
+  )
 
   return (
     <div className="min-h-screen bg-[color:var(--canvas)] text-[color:var(--ink)]">
@@ -546,10 +510,22 @@ function App() {
             </label>
             <span className="status-chip">
               <span className="status-dot bg-[color:var(--verification)]" />
-              14 sellers online
+              {onlineSellerCount} sellers online
             </span>
           </div>
         </header>
+
+        {errorMessage ? (
+          <div className="mt-4 rounded-2xl border border-[color:var(--line)] bg-[color:var(--amber-soft)] px-4 py-3 text-[0.82rem] text-[color:var(--ink)]">
+            {errorMessage}
+          </div>
+        ) : null}
+
+        {notice ? (
+          <div className="mt-4 rounded-2xl border border-[color:var(--line)] bg-[color:var(--surface)] px-4 py-3 text-[0.82rem] text-[color:var(--ink)]">
+            {notice}
+          </div>
+        ) : null}
 
         <div className="mt-5 grid gap-5 xl:grid-cols-[216px_minmax(0,1fr)]">
           <aside className="space-y-4 xl:sticky xl:top-5 xl:self-start">
@@ -557,6 +533,10 @@ function App() {
               <ul className="space-y-1">
                 {screenMeta.map((item) => {
                   const active = activeScreen === item.id
+                  const badge =
+                    item.id === 'negotiations'
+                      ? String(allNegotiations.length)
+                      : item.badge
                   return (
                     <li key={item.id}>
                       <button
@@ -565,7 +545,7 @@ function App() {
                         onClick={() => goTo(item.id)}
                       >
                         <span>{item.label}</span>
-                        {item.badge ? <span className="nav-badge">{item.badge}</span> : null}
+                        {badge ? <span className="nav-badge">{badge}</span> : null}
                       </button>
                     </li>
                   )
@@ -573,51 +553,74 @@ function App() {
               </ul>
             </nav>
 
-            <section className="shell-panel px-4 py-4">
-              <p className="text-[0.72rem] uppercase tracking-[0.08em] text-[color:var(--muted)]">
-                Focus
-              </p>
-              <h2 className="mt-2 text-[0.98rem] font-semibold tracking-[-0.02em]">
-                {activeListing.title}
-              </h2>
-              <div className="mt-3 grid gap-2 text-[0.8rem]">
-                <MetricLine label="Total" value={money(activeNegotiation.finalDeal.itemPrice + activeNegotiation.finalDeal.deliveryFee)} />
-                <MetricLine label="State" value={activeNegotiation.status} />
-                <MetricLine label="Updated" value={activeNegotiation.updatedAt} />
-              </div>
-              <button
-                type="button"
-                className="button-primary mt-4 w-full"
-                onClick={() => openNegotiation(activeNegotiation.id, 'timeline')}
-              >
-                Open workspace
-              </button>
-            </section>
+            {activeListing && activeNegotiation ? (
+              <section className="shell-panel px-4 py-4">
+                <p className="text-[0.72rem] uppercase tracking-[0.08em] text-[color:var(--muted)]">
+                  Focus
+                </p>
+                <h2 className="mt-2 text-[0.98rem] font-semibold tracking-[-0.02em]">
+                  {activeListing.title}
+                </h2>
+                <div className="mt-3 grid gap-2 text-[0.8rem]">
+                  <MetricLine label="Total" value={money(activeNegotiation.finalDeal.itemPrice + activeNegotiation.finalDeal.deliveryFee)} />
+                  <MetricLine label="State" value={activeNegotiation.status} />
+                  <MetricLine label="Updated" value={activeNegotiation.updatedAt} />
+                </div>
+                <button
+                  type="button"
+                  className="button-primary mt-4 w-full"
+                  onClick={() => activeBranch ? openNegotiation(activeBranch.id, 'timeline') : handleStartNegotiation(activeListing)}
+                >
+                  {activeBranch ? 'Open workspace' : 'Start negotiation'}
+                </button>
+              </section>
+            ) : null}
           </aside>
 
           <main className="space-y-4">
-            {activeScreen === 'home' ? (
+            {isLoading ? (
+              <section className="shell-panel px-4 py-8 text-[0.9rem] text-[color:var(--muted)]">
+                Loading marketplace and negotiation data from the backend.
+              </section>
+            ) : null}
+
+            {!isLoading && activeScreen === 'home' ? (
               <MarketplaceHome
                 listings={filteredListings}
+                featuredListing={featuredListing}
+                featuredNegotiationId={featuredBranch?.id ?? null}
                 activeNegotiation={activeNegotiation}
-                onLaunchNegotiation={openNegotiation}
+                negotiationListingIds={negotiationListingIds}
+                negotiationIdByListingId={negotiationIdByListingId}
+                isStartingNegotiation={isStartingNegotiation}
+                isCreatingListing={isCreatingListing}
+                listingForm={listingForm}
+                showListingForm={showListingForm}
+                onOpenNegotiation={openNegotiation}
+                onStartNegotiation={handleStartNegotiation}
+                onCreateListing={handleCreateListing}
+                onListingFormChange={setListingForm}
+                onToggleListingForm={() => setShowListingForm((current) => !current)}
               />
             ) : null}
 
-            {activeScreen === 'agents' ? (
+            {!isLoading && activeScreen === 'agents' && activeListing ? (
               <AgentConfiguration
                 buyerTarget={buyerTarget}
                 buyerCap={buyerCap}
                 sellerFloor={sellerFloor}
                 autoApprove={autoApprove}
+                sellerName={activeListing.seller}
+                isSaving={isSavingRules}
                 onBuyerTargetChange={setBuyerTarget}
                 onBuyerCapChange={setBuyerCap}
                 onSellerFloorChange={setSellerFloor}
                 onAutoApproveChange={setAutoApprove}
+                onSave={handleSaveRules}
               />
             ) : null}
 
-            {activeScreen === 'negotiations' ? (
+            {!isLoading && activeScreen === 'negotiations' ? (
               <MyNegotiations
                 negotiations={filteredNegotiations}
                 listings={listings}
@@ -625,25 +628,28 @@ function App() {
               />
             ) : null}
 
-            {activeScreen === 'timeline' ? (
+            {!isLoading && activeScreen === 'timeline' && activeListing && activeNegotiation ? (
               <NegotiationWorkspace
                 listing={activeListing}
                 negotiation={activeNegotiation}
                 draftInstruction={draftInstruction}
                 onDraftInstructionChange={setDraftInstruction}
+                onRefresh={() => activeBranch ? refreshNegotiation(activeBranch.id) : undefined}
                 onViewFinalDeal={() => goTo('final')}
               />
             ) : null}
 
-            {activeScreen === 'final' ? (
+            {!isLoading && activeScreen === 'final' && activeListing && activeNegotiation ? (
               <FinalDealScreen
                 listing={activeListing}
                 negotiation={activeNegotiation}
+                isApproving={isApproving}
+                onApprove={handleApproveNegotiation}
                 onViewAudit={() => goTo('audit')}
               />
             ) : null}
 
-            {activeScreen === 'audit' ? (
+            {!isLoading && activeScreen === 'audit' && activeListing && activeNegotiation ? (
               <AuditTrailScreen listing={activeListing} negotiation={activeNegotiation} />
             ) : null}
           </main>
@@ -655,70 +661,231 @@ function App() {
 
 function MarketplaceHome({
   listings,
+  featuredListing,
+  featuredNegotiationId,
   activeNegotiation,
-  onLaunchNegotiation,
+  negotiationListingIds,
+  negotiationIdByListingId,
+  isStartingNegotiation,
+  isCreatingListing,
+  listingForm,
+  showListingForm,
+  onOpenNegotiation,
+  onStartNegotiation,
+  onCreateListing,
+  onListingFormChange,
+  onToggleListingForm,
 }: {
   listings: Listing[]
-  activeNegotiation: Negotiation
-  onLaunchNegotiation: (negotiationId: string, screen?: Screen) => void
+  featuredListing: Listing | null
+  featuredNegotiationId: string | null
+  activeNegotiation: Negotiation | null
+  negotiationListingIds: Set<string>
+  negotiationIdByListingId: Map<string, string>
+  isStartingNegotiation: boolean
+  isCreatingListing: boolean
+  listingForm: {
+    title: string
+    description: string
+    price: number
+    condition: string
+    returnPolicy: string
+    sellerName: string
+    sellerRating: number
+    sellerMinPrice: number
+    sellerInventory: number
+    deliveryDays: number
+  }
+  showListingForm: boolean
+  onOpenNegotiation: (negotiationId: string, screen?: Screen) => void
+  onStartNegotiation: (listing: Listing) => void
+  onCreateListing: () => void
+  onListingFormChange: (
+    value: {
+      title: string
+      description: string
+      price: number
+      condition: string
+      returnPolicy: string
+      sellerName: string
+      sellerRating: number
+      sellerMinPrice: number
+      sellerInventory: number
+      deliveryDays: number
+    },
+  ) => void
+  onToggleListingForm: () => void
 }) {
   return (
     <>
       <SectionHeader
         title="Marketplace"
-        description="Live inventory with negotiation-ready pricing and seller signals."
+        description="Live inventory from the backend with negotiation-ready pricing and seller signals."
         actions={
-          <button
-            type="button"
-            className="button-primary"
-            onClick={() => onLaunchNegotiation(activeNegotiation.id, 'timeline')}
-          >
-            Resume live deal
-          </button>
+          <>
+            <button type="button" className="button-secondary" onClick={onToggleListingForm}>
+              {showListingForm ? 'Close form' : 'Add product'}
+            </button>
+            {featuredListing ? (
+              featuredNegotiationId ? (
+                <button
+                  type="button"
+                  className="button-primary"
+                  onClick={() => onOpenNegotiation(featuredNegotiationId, 'timeline')}
+                >
+                  Resume live deal
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  className="button-primary"
+                  onClick={() => onStartNegotiation(featuredListing)}
+                  disabled={isStartingNegotiation}
+                >
+                  {isStartingNegotiation ? 'Starting…' : 'Start negotiation'}
+                </button>
+              )
+            ) : undefined}
+          </>
         }
       />
 
-      <section className="shell-panel overflow-hidden">
-        <div className="grid gap-0 lg:grid-cols-[minmax(0,1.1fr)_320px]">
-          <div className="listing-hero listing-hero-indigo">
-            <div className="flex h-full flex-col justify-end gap-3">
-              <span className="meta-pill">Featured listing</span>
-              <div>
-                <p className="text-[0.76rem] font-medium uppercase tracking-[0.08em] text-[color:var(--muted)]">
-                  Office furniture
-                </p>
-                <h2 className="mt-1 text-[1.45rem] font-semibold tracking-[-0.03em]">
-                  Secretlab TITAN Evo 2022, SoftWeave charcoal
-                </h2>
+      {showListingForm ? (
+        <section className="shell-panel px-4 py-4">
+          <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            <TextField
+              label="Product title"
+              value={listingForm.title}
+              onChange={(value) => onListingFormChange({ ...listingForm, title: value })}
+            />
+            <NumberField
+              label="Ask price"
+              value={listingForm.price}
+              onChange={(value) => onListingFormChange({
+                ...listingForm,
+                price: value,
+                sellerMinPrice: listingForm.sellerMinPrice || value,
+              })}
+            />
+            <TextField
+              label="Condition"
+              value={listingForm.condition}
+              onChange={(value) => onListingFormChange({ ...listingForm, condition: value })}
+            />
+            <TextField
+              label="Seller name"
+              value={listingForm.sellerName}
+              onChange={(value) => onListingFormChange({ ...listingForm, sellerName: value })}
+            />
+            <NumberField
+              label="Seller rating"
+              value={listingForm.sellerRating}
+              step={0.1}
+              onChange={(value) => onListingFormChange({ ...listingForm, sellerRating: value })}
+            />
+            <NumberField
+              label="Seller floor"
+              value={listingForm.sellerMinPrice}
+              onChange={(value) => onListingFormChange({ ...listingForm, sellerMinPrice: value })}
+            />
+            <NumberField
+              label="Inventory"
+              value={listingForm.sellerInventory}
+              onChange={(value) => onListingFormChange({ ...listingForm, sellerInventory: value })}
+            />
+            <NumberField
+              label="Delivery days"
+              value={listingForm.deliveryDays}
+              onChange={(value) => onListingFormChange({ ...listingForm, deliveryDays: value })}
+            />
+            <TextField
+              label="Return policy"
+              value={listingForm.returnPolicy}
+              onChange={(value) => onListingFormChange({ ...listingForm, returnPolicy: value })}
+            />
+          </div>
+          <div className="mt-4">
+            <label className="block">
+              <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">Description</p>
+              <textarea
+                className="mt-3 min-h-24 w-full rounded-xl bg-[color:var(--surface-subtle)] px-3 py-3 text-[0.82rem] leading-5 text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
+                value={listingForm.description}
+                onChange={(event) => onListingFormChange({ ...listingForm, description: event.target.value })}
+              />
+            </label>
+          </div>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <button
+              type="button"
+              className="button-primary"
+              onClick={onCreateListing}
+              disabled={isCreatingListing}
+            >
+              {isCreatingListing ? 'Adding…' : 'Add product'}
+            </button>
+            <button type="button" className="button-secondary" onClick={onToggleListingForm}>
+              Cancel
+            </button>
+          </div>
+        </section>
+      ) : null}
+
+      {featuredListing ? (
+        <section className="shell-panel overflow-hidden">
+          <div className="grid gap-0 lg:grid-cols-[minmax(0,1.1fr)_320px]">
+            <div className={`listing-hero listing-hero-${featuredListing.accent}`}>
+              <div className="flex h-full flex-col justify-end gap-3">
+                <span className="meta-pill">Featured listing</span>
+                <div>
+                  <p className="text-[0.76rem] font-medium uppercase tracking-[0.08em] text-[color:var(--muted)]">
+                    {featuredListing.category}
+                  </p>
+                  <h2 className="mt-1 text-[1.45rem] font-semibold tracking-[-0.03em]">
+                    {featuredListing.title}
+                  </h2>
+                </div>
+              </div>
+            </div>
+
+            <div className="border-t border-[color:var(--line)] px-4 py-4 lg:border-l lg:border-t-0">
+              <div className="grid gap-2 text-[0.82rem]">
+                <MetricLine label="Ask" value={money(featuredListing.price)} />
+                <MetricLine label="Seller" value={featuredListing.seller} />
+                <MetricLine label="Signal" value={featuredListing.location} />
+                <MetricLine label="Trust" value={featuredListing.trust} />
+              </div>
+              <p className="mt-4 text-[0.82rem] leading-5 text-[color:var(--muted)]">
+                {activeNegotiation?.listingId === featuredListing.id
+                  ? activeNegotiation.summary
+                  : featuredListing.note}
+              </p>
+              <div className="mt-4 flex gap-2">
+                {featuredNegotiationId ? (
+                  <button
+                    type="button"
+                    className="button-primary"
+                    onClick={() => onOpenNegotiation(featuredNegotiationId, 'timeline')}
+                  >
+                    Open negotiation
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="button-primary"
+                    onClick={() => onStartNegotiation(featuredListing)}
+                    disabled={isStartingNegotiation}
+                  >
+                    {isStartingNegotiation ? 'Starting…' : 'Start negotiation'}
+                  </button>
+                )}
+                <button type="button" className="button-secondary">
+                  Save
+                </button>
               </div>
             </div>
           </div>
-
-          <div className="border-t border-[color:var(--line)] px-4 py-4 lg:border-l lg:border-t-0">
-            <div className="grid gap-2 text-[0.82rem]">
-              <MetricLine label="Ask" value={money(640)} />
-              <MetricLine label="Seller" value="CityHall Studio" />
-              <MetricLine label="Location" value="Tanjong Pagar" />
-              <MetricLine label="Trust" value="Receipt + seller ID verified" />
-            </div>
-            <p className="mt-4 text-[0.82rem] leading-5 text-[color:var(--muted)]">
-              Includes magnetic head pillow and original receipt.
-            </p>
-            <div className="mt-4 flex gap-2">
-              <button
-                type="button"
-                className="button-primary"
-                onClick={() => onLaunchNegotiation(activeNegotiation.id, 'timeline')}
-              >
-                Open negotiation
-              </button>
-              <button type="button" className="button-secondary">
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      </section>
+        </section>
+      ) : null}
 
       <section className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
         {listings.map((listing) => (
@@ -745,16 +912,26 @@ function MarketplaceHome({
                 <span className="text-[0.78rem] text-[color:var(--muted)]">
                   {listing.shipping}
                 </span>
-                {negotiationViewIds.has(listing.id) ? (
+                {negotiationListingIds.has(listing.id) ? (
                   <button
                     type="button"
                     className="button-secondary"
-                    onClick={() => onLaunchNegotiation(listing.id, 'timeline')}
+                    onClick={() => {
+                      const negotiationId = negotiationIdByListingId.get(listing.id) ?? null
+                      if (negotiationId) {
+                        onOpenNegotiation(negotiationId, 'timeline')
+                      }
+                    }}
                   >
                     Open
                   </button>
                 ) : (
-                  <button type="button" className="button-secondary">
+                  <button
+                    type="button"
+                    className="button-secondary"
+                    onClick={() => onStartNegotiation(listing)}
+                    disabled={isStartingNegotiation}
+                  >
                     Start
                   </button>
                 )}
@@ -772,26 +949,36 @@ function AgentConfiguration({
   buyerCap,
   sellerFloor,
   autoApprove,
+  sellerName,
+  isSaving,
   onBuyerTargetChange,
   onBuyerCapChange,
   onSellerFloorChange,
   onAutoApproveChange,
+  onSave,
 }: {
   buyerTarget: number
   buyerCap: number
   sellerFloor: number
   autoApprove: boolean
+  sellerName: string
+  isSaving: boolean
   onBuyerTargetChange: (value: number) => void
   onBuyerCapChange: (value: number) => void
   onSellerFloorChange: (value: number) => void
   onAutoApproveChange: (value: boolean) => void
+  onSave: () => void
 }) {
   return (
     <>
       <SectionHeader
         title="Agents"
-        description="Compact buyer and seller rules."
-        actions={<button type="button" className="button-primary">Save rules</button>}
+        description="Buyer and seller rules are saved into the backend agent configuration."
+        actions={
+          <button type="button" className="button-primary" onClick={onSave} disabled={isSaving}>
+            {isSaving ? 'Saving…' : 'Save rules'}
+          </button>
+        }
       />
 
       <section className="grid gap-4 xl:grid-cols-2">
@@ -801,16 +988,16 @@ function AgentConfiguration({
             <SliderField
               label="Opening target"
               value={buyerTarget}
-              min={1750}
-              max={1950}
+              min={Math.max(100, buyerTarget - 400)}
+              max={buyerTarget + 200}
               step={25}
               onChange={onBuyerTargetChange}
             />
             <SliderField
               label="Hard cap"
               value={buyerCap}
-              min={1880}
-              max={2050}
+              min={Math.max(100, buyerCap - 400)}
+              max={buyerCap + 200}
               step={5}
               onChange={onBuyerCapChange}
             />
@@ -819,20 +1006,20 @@ function AgentConfiguration({
               items={[
                 'Keep a 24-hour inspection window.',
                 'Do not trade verified accessories.',
-                'Escalate if delivery slips past Wednesday.',
+                'Rebuild the buyer agent from saved config every round.',
               ]}
             />
           </div>
         </article>
 
         <article className="shell-panel px-4 py-4">
-          <PanelTitle title="Seller" badge="Seller side" />
+          <PanelTitle title="Seller" badge={sellerName} />
           <div className="mt-4 space-y-5">
             <SliderField
               label="Minimum item price"
               value={sellerFloor}
-              min={1880}
-              max={1985}
+              min={Math.max(100, sellerFloor - 400)}
+              max={sellerFloor + 200}
               step={5}
               onChange={onSellerFloorChange}
             />
@@ -843,7 +1030,7 @@ function AgentConfiguration({
                   Auto-approve matching terms
                 </p>
                 <p className="mt-1 text-[0.76rem] text-[color:var(--muted)]">
-                  Finalize if price and delivery stay unchanged.
+                  New campaigns finalize automatically when backend agreement is reached.
                 </p>
               </div>
               <button
@@ -857,11 +1044,11 @@ function AgentConfiguration({
             </div>
 
             <MiniList
-              title="Allowed concessions"
+              title="Backend notes"
               items={[
-                'Keep the magnetic head pillow included above the floor.',
-                'Split delivery into a separate line item.',
-                'Prioritize pickup before cutting price further.',
+                'Seller defaults are saved against the active seller.',
+                'Reservation values are enforced server-side on every turn.',
+                'Mediator validation runs before any turn reaches the UI.',
               ]}
             />
           </div>
@@ -884,12 +1071,18 @@ function MyNegotiations({
     <>
       <SectionHeader
         title="Negotiations"
-        description="Active threads only."
-        actions={<button type="button" className="button-secondary">Filter</button>}
+        description="Backend-managed branches across all active campaigns."
+        actions={<button type="button" className="button-secondary">Live branches</button>}
       />
 
       <section className="shell-panel overflow-hidden">
         <div className="divide-y divide-[color:var(--line)]">
+          {negotiations.length === 0 ? (
+            <div className="px-4 py-6 text-[0.82rem] text-[color:var(--muted)]">
+              No negotiations exist yet. Start one from the marketplace.
+            </div>
+          ) : null}
+
           {negotiations.map((entry) => {
             const listing = listings.find((candidate) => candidate.id === entry.listingId)
             return (
@@ -903,7 +1096,7 @@ function MyNegotiations({
                     <span className="text-[0.74rem] text-[color:var(--muted)]">{entry.stage}</span>
                   </div>
                   <h2 className="mt-2 truncate text-[0.98rem] font-semibold tracking-[-0.02em]">
-                    {listing?.title}
+                    {listing?.title ?? 'Unknown listing'}
                   </h2>
                   <p className="mt-1 text-[0.78rem] text-[color:var(--muted)]">{entry.nextAction}</p>
                 </div>
@@ -945,12 +1138,14 @@ function NegotiationWorkspace({
   negotiation,
   draftInstruction,
   onDraftInstructionChange,
+  onRefresh,
   onViewFinalDeal,
 }: {
   listing: Listing
   negotiation: Negotiation
   draftInstruction: string
   onDraftInstructionChange: (value: string) => void
+  onRefresh: () => void
   onViewFinalDeal: () => void
 }) {
   const visibleMessages = negotiation.messages.slice(-5)
@@ -964,8 +1159,8 @@ function NegotiationWorkspace({
         description={`${listing.title} · ${money(negotiation.finalDeal.itemPrice + negotiation.finalDeal.deliveryFee)}`}
         actions={
           <>
-            <button type="button" className="button-secondary">
-              Pause
+            <button type="button" className="button-secondary" onClick={onRefresh}>
+              Refresh
             </button>
             <button type="button" className="button-primary" onClick={onViewFinalDeal}>
               Final deal
@@ -1003,15 +1198,15 @@ function NegotiationWorkspace({
               </div>
 
               <div className="mt-4 space-y-3">
-              {hiddenMessageCount > 0 ? (
-                <div className="rounded-xl bg-[color:var(--surface-muted)] px-3 py-2 text-[0.76rem] text-[color:var(--muted)]">
-                  Earlier rounds · {hiddenMessageCount} hidden
-                </div>
-              ) : null}
+                {hiddenMessageCount > 0 ? (
+                  <div className="rounded-xl bg-[color:var(--surface-muted)] px-3 py-2 text-[0.76rem] text-[color:var(--muted)]">
+                    Earlier rounds · {hiddenMessageCount} hidden
+                  </div>
+                ) : null}
 
-              {visibleMessages.map((message) => (
-                <MessageRow key={message.id} message={message} />
-              ))}
+                {visibleMessages.map((message) => (
+                  <MessageRow key={message.id} message={message} />
+                ))}
               </div>
             </div>
 
@@ -1020,7 +1215,7 @@ function NegotiationWorkspace({
                 <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">
                   Next buyer instruction
                 </p>
-                <span className="text-[0.72rem] text-[color:var(--muted)]">Structured note</span>
+                <span className="text-[0.72rem] text-[color:var(--muted)]">Saved config only</span>
               </div>
               <textarea
                 className="mt-3 min-h-20 w-full rounded-xl bg-[color:var(--surface-muted)] px-3 py-3 text-[0.82rem] leading-5 text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
@@ -1031,8 +1226,8 @@ function NegotiationWorkspace({
                 <span className="text-[0.76rem] text-[color:var(--muted)]">
                   {negotiation.buyerGuardrail}
                 </span>
-                <button type="button" className="button-primary">
-                  Queue
+                <button type="button" className="button-primary" onClick={onRefresh}>
+                  Sync backend
                 </button>
               </div>
             </div>
@@ -1095,10 +1290,14 @@ function NegotiationWorkspace({
 function FinalDealScreen({
   listing,
   negotiation,
+  isApproving,
+  onApprove,
   onViewAudit,
 }: {
   listing: Listing
   negotiation: Negotiation
+  isApproving: boolean
+  onApprove: () => void
   onViewAudit: () => void
 }) {
   const total = negotiation.finalDeal.itemPrice + negotiation.finalDeal.deliveryFee
@@ -1113,8 +1312,8 @@ function FinalDealScreen({
             <button type="button" className="button-secondary" onClick={onViewAudit}>
               Audit
             </button>
-            <button type="button" className="button-primary">
-              Approve
+            <button type="button" className="button-primary" onClick={onApprove} disabled={isApproving}>
+              {isApproving ? 'Approving…' : 'Approve'}
             </button>
           </>
         }
@@ -1153,10 +1352,10 @@ function FinalDealScreen({
             <MiniList
               title="Why it clears"
               items={[
-                'Budget still holds.',
-                'Verified accessory set is intact.',
-                'Delivery split does not weaken inspection rights.',
-                'Comps still support the price.',
+                'Budget guardrails are enforced by the backend.',
+                'Mediator validation passed before the offer reached the UI.',
+                'The final branch state is persisted in Supabase.',
+                'Approval writes the final deal back to the backend.',
               ]}
             />
           </div>
@@ -1167,7 +1366,7 @@ function FinalDealScreen({
             title="Approval checklist"
             items={[
               'Budget guardrail still holds.',
-              'Listing evidence remains valid.',
+              'Market evidence remains cached on the negotiation branch.',
               'Delivery window is acceptable.',
               'Inspection path is documented.',
             ]}
@@ -1177,11 +1376,11 @@ function FinalDealScreen({
               Approval boundary
             </p>
             <p className="mt-2 text-[0.78rem] leading-5 text-[color:var(--muted)]">
-              Payment only authorizes after delivery scheduling is confirmed.
+              Approving here calls the backend final-deal approval endpoint for the active negotiation branch.
             </p>
             <div className="mt-4 flex flex-col gap-2">
-              <button type="button" className="button-primary">
-                Approve and schedule
+              <button type="button" className="button-primary" onClick={onApprove} disabled={isApproving}>
+                {isApproving ? 'Approving…' : 'Approve and schedule'}
               </button>
               <button type="button" className="button-ghost">
                 Reopen shipping
@@ -1259,7 +1458,7 @@ function SectionHeader({
 }: {
   title: string
   description: string
-  actions?: React.ReactNode
+  actions?: ReactNode
 }) {
   return (
     <section className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
@@ -1325,6 +1524,53 @@ function SliderField({
   )
 }
 
+function TextField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block">
+      <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">{label}</p>
+      <input
+        type="text"
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-3 h-11 w-full rounded-xl bg-[color:var(--surface-subtle)] px-3 text-[0.82rem] text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
+      />
+    </label>
+  )
+}
+
+function NumberField({
+  label,
+  value,
+  onChange,
+  step = 1,
+}: {
+  label: string
+  value: number
+  onChange: (value: number) => void
+  step?: number
+}) {
+  return (
+    <label className="block">
+      <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">{label}</p>
+      <input
+        type="number"
+        value={Number.isFinite(value) ? value : 0}
+        step={step}
+        onChange={(event) => onChange(Number(event.target.value))}
+        className="mt-3 h-11 w-full rounded-xl bg-[color:var(--surface-subtle)] px-3 text-[0.82rem] text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
+      />
+    </label>
+  )
+}
+
 function MiniList({ title, items }: { title: string; items: string[] }) {
   return (
     <div>
@@ -1341,7 +1587,7 @@ function MiniList({ title, items }: { title: string; items: string[] }) {
   )
 }
 
-function MessageRow({ message }: { message: Message }) {
+function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
   const cardClass =
     message.type === 'offer'
       ? 'message-row-offer'
@@ -1473,7 +1719,7 @@ function resultClass(result: AuditEvent['result']) {
   return 'tone-pill tone-pill-primary'
 }
 
-function labelForType(type: Message['type']) {
+function labelForType(type: Negotiation['messages'][number]['type']) {
   if (type === 'offer') return 'Buyer'
   if (type === 'counter') return 'Seller'
   if (type === 'approval') return 'Approval'

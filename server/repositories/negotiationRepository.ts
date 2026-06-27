@@ -6,10 +6,12 @@ import type {
   AuditEventView,
   BuyerAgentProfile,
   CampaignView,
+  CreateListingRequest,
   CreateNegotiationCampaignRequest,
   FinalDealView,
   MarketContextSnapshot,
   MediatorDecision,
+  MarketplaceListingView,
   NegotiationBranchView,
   NegotiationMessageView,
   OfferTerms,
@@ -194,6 +196,73 @@ function scoreOutcome(negotiation: NegotiationBranchView): RankedSellerOutcome {
 }
 
 export class NegotiationRepository {
+  async createListing(input: CreateListingRequest): Promise<MarketplaceListingView> {
+    const created = await prisma.$transaction(async (tx) => {
+      const seller = await tx.seller.create({
+        data: {
+          name: input.seller.name,
+          rating: input.seller.rating,
+          minPrice: input.seller.minPrice,
+          inventory: input.seller.inventory,
+          deliveryDays: input.seller.deliveryDays,
+        },
+      })
+
+      const listing = await tx.listing.create({
+        data: {
+          title: input.title,
+          description: input.description ?? null,
+          price: input.price,
+          condition: input.condition,
+          returnPolicy: input.returnPolicy ?? null,
+          sellerId: seller.id,
+        },
+        include: {
+          seller: true,
+        },
+      })
+
+      return listing
+    })
+
+    return {
+      id: created.id,
+      title: created.title,
+      description: created.description,
+      price: created.price,
+      condition: created.condition,
+      returnPolicy: created.returnPolicy,
+      sellerId: created.sellerId,
+      sellerName: created.seller.name,
+      sellerRating: created.seller.rating,
+      sellerInventory: created.seller.inventory,
+      deliveryDays: created.seller.deliveryDays,
+    }
+  }
+
+  async listListings(): Promise<MarketplaceListingView[]> {
+    const listings = await prisma.listing.findMany({
+      include: {
+        seller: true,
+      },
+      orderBy: { createdAt: "desc" },
+    });
+
+    return listings.map((listing) => ({
+      id: listing.id,
+      title: listing.title,
+      description: listing.description,
+      price: listing.price,
+      condition: listing.condition,
+      returnPolicy: listing.returnPolicy,
+      sellerId: listing.sellerId,
+      sellerName: listing.seller.name,
+      sellerRating: listing.seller.rating,
+      sellerInventory: listing.seller.inventory,
+      deliveryDays: listing.seller.deliveryDays,
+    }));
+  }
+
   async getBuyerAgentProfile(userId: string): Promise<BuyerAgentProfile | null> {
     const row = await prisma.buyerAgentProfile.findUnique({
       where: { userId },
@@ -417,6 +486,35 @@ export class NegotiationRepository {
         outcomes: views.map(scoreOutcome),
       }),
     };
+  }
+
+  async listNegotiationBranches(): Promise<NegotiationBranchView[]> {
+    const negotiations = await prisma.negotiation.findMany({
+      orderBy: { updatedAt: "desc" },
+      include: {
+        messages: { orderBy: { createdAt: "asc" } },
+        auditEvents: { orderBy: { createdAt: "asc" } },
+        finalDeal: true,
+      },
+    });
+
+    return negotiations.map((negotiation) => ({
+      id: negotiation.id,
+      campaignId: negotiation.campaignId,
+      listingId: negotiation.listingId,
+      sellerId: negotiation.sellerId,
+      buyerBudget: negotiation.buyerBudget,
+      deliveryDeadline: negotiation.deliveryDeadline,
+      preferredVariant: negotiation.preferredVariant,
+      negotiationStyle: negotiation.negotiationStyle,
+      priority: negotiation.priority,
+      status: negotiation.status as NegotiationBranchView["status"],
+      marketContext: toMarketContext(negotiation.marketContext),
+      state: toStoredState(negotiation.engineState),
+      messages: negotiation.messages.map(toMessageView),
+      auditEvents: negotiation.auditEvents.map(toAuditView),
+      finalDeal: toFinalDealView(negotiation.finalDeal),
+    }))
   }
 
   async saveMarketContext(

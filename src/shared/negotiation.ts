@@ -176,6 +176,35 @@ export interface NegotiationTargetInput {
   preferredVariant?: string | null;
 }
 
+export interface MarketplaceListingView {
+  id: string;
+  title: string;
+  description?: string | null;
+  price: number;
+  condition: string;
+  returnPolicy?: string | null;
+  sellerId: string;
+  sellerName: string;
+  sellerRating: number;
+  sellerInventory: number;
+  deliveryDays: number;
+}
+
+export interface CreateListingRequest {
+  title: string;
+  description?: string | null;
+  price: number;
+  condition: string;
+  returnPolicy?: string | null;
+  seller: {
+    name: string;
+    rating: number;
+    minPrice: number;
+    inventory: number;
+    deliveryDays: number;
+  };
+}
+
 export interface CreateNegotiationCampaignRequest {
   buyerUserId: string;
   buyerProfile?: BuyerAgentProfile;

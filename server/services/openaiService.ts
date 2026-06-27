@@ -19,44 +19,65 @@ export class OpenAIService {
       return options.mock();
     }
 
+    const payload = await this.requestStructuredOutput(options, true);
+    const text = this.extractOutputText(payload);
+    return JSON.parse(text) as T;
+  }
+
+  private async requestStructuredOutput<T>(
+    options: GenerateStructuredOutputOptions<T>,
+    includeReasoning: boolean,
+  ): Promise<Record<string, unknown>> {
+    const body: Record<string, unknown> = {
+      model: this.config.openAiModel,
+      input: [
+        {
+          role: "system",
+          content: [{ type: "input_text", text: options.system }],
+        },
+        {
+          role: "user",
+          content: [{ type: "input_text", text: options.user }],
+        },
+      ],
+      max_output_tokens: options.maxOutputTokens ?? 900,
+      text: {
+        format: {
+          type: "json_schema",
+          name: options.schemaName,
+          schema: options.schema,
+        },
+      },
+    };
+
+    if (includeReasoning) {
+      body.reasoning = { effort: "medium" };
+    }
+
     const response = await fetch("https://api.openai.com/v1/responses", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${this.config.openAiApiKey}`,
       },
-      body: JSON.stringify({
-        model: this.config.openAiModel,
-        input: [
-          {
-            role: "system",
-            content: [{ type: "input_text", text: options.system }],
-          },
-          {
-            role: "user",
-            content: [{ type: "input_text", text: options.user }],
-          },
-        ],
-        max_output_tokens: options.maxOutputTokens ?? 900,
-        reasoning: { effort: "medium" },
-        text: {
-          format: {
-            type: "json_schema",
-            name: options.schemaName,
-            schema: options.schema,
-          },
-        },
-      }),
+      body: JSON.stringify(body),
     });
 
     if (!response.ok) {
       const errorText = await response.text();
+
+      if (
+        includeReasoning &&
+        errorText.includes("reasoning.effort") &&
+        errorText.includes("unsupported_parameter")
+      ) {
+        return this.requestStructuredOutput(options, false);
+      }
+
       throw new Error(`OpenAI request failed: ${response.status} ${errorText}`);
     }
 
-    const payload = (await response.json()) as Record<string, unknown>;
-    const text = this.extractOutputText(payload);
-    return JSON.parse(text) as T;
+    return (await response.json()) as Record<string, unknown>;
   }
 
   private extractOutputText(payload: Record<string, unknown>): string {

@@ -4,6 +4,7 @@ import { BuyerAgent } from "./agents/buyerAgent.js";
 import { MediatorAgent } from "./agents/mediatorAgent.js";
 import { SellerAgent } from "./agents/sellerAgent.js";
 import { NegotiationEngine } from "./domain/negotiationEngine.js";
+import { setCorsHeaders } from "./http.js";
 import { NegotiationRepository } from "./repositories/negotiationRepository.js";
 import { ApiRouter } from "./routes/apiRouter.js";
 import { NegotiationEventBus } from "./services/eventBus.js";
@@ -28,6 +29,7 @@ const router = new ApiRouter(config, repository, engine, eventBus);
 const server = createServer((req, res) => {
   void router.handle(req, res).catch((error: unknown) => {
     const message = error instanceof Error ? error.message : "Unknown server error.";
+    setCorsHeaders(res, config);
     res.writeHead(500, { "Content-Type": "application/json; charset=utf-8" });
     res.end(JSON.stringify({ error: message }));
   });

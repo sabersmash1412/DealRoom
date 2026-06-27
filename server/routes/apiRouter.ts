@@ -1,5 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type {
+  CreateListingRequest,
   CreateNegotiationCampaignRequest,
   SellerAgentConfig,
   UpdateBuyerAgentProfileRequest,
@@ -69,6 +70,40 @@ function parseCampaignRequest(input: unknown): CreateNegotiationCampaignRequest 
   };
 }
 
+function assertNumber(value: unknown, message: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    throw new Error(message);
+  }
+
+  return value;
+}
+
+function parseCreateListingRequest(input: unknown): CreateListingRequest {
+  if (!isRecord(input)) {
+    throw new Error("Listing payload must be an object.");
+  }
+
+  const seller = input.seller;
+  if (!isRecord(seller)) {
+    throw new Error("Listing payload must include a seller object.");
+  }
+
+  return {
+    title: assertString(input.title, "Listing title is required."),
+    description: typeof input.description === "string" ? input.description : null,
+    price: assertNumber(input.price, "Listing price must be a number."),
+    condition: assertString(input.condition, "Listing condition is required."),
+    returnPolicy: typeof input.returnPolicy === "string" ? input.returnPolicy : null,
+    seller: {
+      name: assertString(seller.name, "Seller name is required."),
+      rating: assertNumber(seller.rating, "Seller rating must be a number."),
+      minPrice: assertNumber(seller.minPrice, "Seller minimum price must be a number."),
+      inventory: assertNumber(seller.inventory, "Seller inventory must be a number."),
+      deliveryDays: assertNumber(seller.deliveryDays, "Seller delivery days must be a number."),
+    },
+  };
+}
+
 export class ApiRouter {
   constructor(
     private readonly config: AppConfig,
@@ -87,6 +122,46 @@ export class ApiRouter {
       return;
     }
 
+    if (
+      method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "api" &&
+      segments[1] === "listings"
+    ) {
+      const listings = await this.repository.listListings();
+      sendJson(res, this.config, 200, listings);
+      return;
+    }
+
+    if (
+      method === "POST" &&
+      segments.length === 2 &&
+      segments[0] === "api" &&
+      segments[1] === "listings"
+    ) {
+      const payload = parseCreateListingRequest(await readJsonBody(req));
+      const listing = await this.repository.createListing(payload);
+      sendJson(res, this.config, 201, listing);
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      segments.length === 3 &&
+      segments[0] === "api" &&
+      segments[1] === "agent-profiles" &&
+      segments[2] === "buyer"
+    ) {
+      const userId = assertString(url.searchParams.get("userId"), "userId is required.");
+      const profile = await this.repository.getBuyerAgentProfile(userId);
+      if (!profile) {
+        sendJson(res, this.config, 404, { error: "Buyer profile not found." });
+        return;
+      }
+      sendJson(res, this.config, 200, profile);
+      return;
+    }
+
     if (segments.length === 1 && segments[0] === "health") {
       sendJson(res, this.config, 200, { ok: true });
       return;
@@ -102,6 +177,19 @@ export class ApiRouter {
       const payload = parseBuyerProfile(await readJsonBody(req));
       const profile = await this.repository.upsertBuyerAgentProfile(payload);
       sendJson(res, this.config, 200, profile);
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      segments.length === 4 &&
+      segments[0] === "api" &&
+      segments[1] === "sellers" &&
+      segments[3] === "agent-config"
+    ) {
+      const sellerId = segments[2];
+      const config = await this.repository.getSellerAgentConfig(sellerId);
+      sendJson(res, this.config, 200, config);
       return;
     }
 
@@ -135,6 +223,17 @@ export class ApiRouter {
       this.engine.startCampaign(result.campaignId);
       const campaign = await this.repository.getCampaign(result.campaignId);
       sendJson(res, this.config, 201, campaign);
+      return;
+    }
+
+    if (
+      method === "GET" &&
+      segments.length === 2 &&
+      segments[0] === "api" &&
+      segments[1] === "negotiations"
+    ) {
+      const negotiations = await this.repository.listNegotiationBranches();
+      sendJson(res, this.config, 200, negotiations);
       return;
     }
 
