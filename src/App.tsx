@@ -1148,7 +1148,7 @@ function NegotiationWorkspace({
   onRefresh: () => void
   onViewFinalDeal: () => void
 }) {
-  const visibleMessages = negotiation.messages.slice(-5)
+  const visibleMessages = negotiation.messages.slice(-8)
   const hiddenMessageCount = negotiation.messages.length - visibleMessages.length
   const visibleTimeline = negotiation.timeline.slice(-4)
 
@@ -1184,6 +1184,19 @@ function NegotiationWorkspace({
               <InlineStat label="Next" value={negotiation.nextAction} />
             </div>
 
+            <div className="mt-4 grid gap-3 lg:grid-cols-2">
+              <AutomationCard
+                label="Exa market context"
+                title={negotiation.marketSummary.label}
+                detail={negotiation.marketSummary.detail}
+              />
+              <AutomationCard
+                label="Mediator review"
+                title={negotiation.mediatorSummary.label}
+                detail={negotiation.mediatorSummary.detail}
+              />
+            </div>
+
             <div className="mt-5 rounded-[1rem] bg-[color:var(--surface-subtle)] px-3 py-3 sm:px-4">
               <div className="flex items-center justify-between gap-3 border-b border-[color:var(--line)] pb-3">
                 <div>
@@ -1191,10 +1204,12 @@ function NegotiationWorkspace({
                     Live chat
                   </p>
                   <p className="mt-1 text-[0.8rem] text-[color:var(--muted)]">
-                    Buyer on the right. Seller on the left.
+                    Buyer on the right. Seller on the left. Exa and mediator system events are centered.
                   </p>
                 </div>
-                <span className="meta-pill">Round {negotiation.messages.length}</span>
+                <span className="meta-pill">
+                  Round {Math.max(negotiation.round, 1)} · {negotiation.turnCount} turns
+                </span>
               </div>
 
               <div className="mt-4 space-y-3">
@@ -1595,9 +1610,11 @@ function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
         ? 'message-row-counter'
         : message.type === 'approval'
           ? 'message-row-approval'
-          : message.side === 'verification'
+          : message.tone === 'warning'
+            ? 'message-row-warning'
+            : message.tone === 'verification' || message.side === 'verification'
             ? 'message-row-verification'
-            : 'message-row-status'
+            : 'message-row-system'
 
   const wrapperClass =
     message.side === 'buyer'
@@ -1608,7 +1625,7 @@ function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
 
   const bubbleWidth =
     message.side === 'system' || message.side === 'verification'
-      ? 'max-w-[20rem]'
+      ? 'max-w-[32rem]'
       : 'max-w-[30rem]'
 
   const metaTone =
@@ -1626,6 +1643,9 @@ function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
             <div className={`flex flex-wrap items-center gap-2 ${metaTone}`}>
               <span className="text-[0.74rem] font-medium">{message.actor}</span>
               <span className="text-[0.7rem]">{labelForType(message.type)}</span>
+              {message.createdAt ? (
+                <span className="text-[0.7rem]">{formatMessageTime(message.createdAt)}</span>
+              ) : null}
             </div>
             <h3 className="mt-1 text-[0.92rem] font-semibold tracking-[-0.02em] text-inherit">
               {message.title}
@@ -1640,7 +1660,7 @@ function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
         <p className="mt-2 text-[0.8rem] leading-5 text-inherit">{message.body}</p>
         {message.meta?.length ? (
           <div className="mt-3 flex flex-wrap gap-2">
-            {message.meta.slice(0, 2).map((entry) => (
+            {message.meta.slice(0, 3).map((entry) => (
               <span
                 key={entry}
                 className={`meta-pill ${message.side === 'buyer' ? 'meta-pill-inverse' : ''}`}
@@ -1652,6 +1672,26 @@ function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
         ) : null}
       </div>
     </article>
+  )
+}
+
+function AutomationCard({
+  label,
+  title,
+  detail,
+}: {
+  label: string
+  title: string
+  detail: string
+}) {
+  return (
+    <div className="rounded-xl border border-[color:var(--line)] bg-[color:var(--surface)] px-3 py-3">
+      <p className="text-[0.7rem] uppercase tracking-[0.08em] text-[color:var(--muted)]">
+        {label}
+      </p>
+      <p className="mt-1 text-[0.82rem] font-medium text-[color:var(--ink)]">{title}</p>
+      <p className="mt-2 text-[0.76rem] leading-5 text-[color:var(--muted)]">{detail}</p>
+    </div>
   )
 }
 
@@ -1724,6 +1764,13 @@ function labelForType(type: Negotiation['messages'][number]['type']) {
   if (type === 'counter') return 'Seller'
   if (type === 'approval') return 'Approval'
   return 'System'
+}
+
+function formatMessageTime(value: string) {
+  return new Date(value).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
 }
 
 function money(value: number) {

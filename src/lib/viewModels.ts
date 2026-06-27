@@ -31,6 +31,8 @@ export type Message = {
   body: string
   amount?: number
   meta?: string[]
+  tone?: 'neutral' | 'verification' | 'warning' | 'success'
+  createdAt?: string
 }
 
 export type TimelineEvent = {
@@ -57,6 +59,8 @@ export type Negotiation = {
   listingId: string
   stage: string
   status: 'Ready' | 'Waiting' | 'Hold'
+  round: number
+  turnCount: number
   askPrice: number
   liveOffer: number
   priceDelta: number
@@ -66,6 +70,14 @@ export type Negotiation = {
   sellerSignal: string
   nextAction: string
   summary: string
+  marketSummary: {
+    label: string
+    detail: string
+  }
+  mediatorSummary: {
+    label: string
+    detail: string
+  }
   messages: Message[]
   timeline: TimelineEvent[]
   audit: AuditEvent[]
@@ -118,6 +130,27 @@ function formatUpdatedAt(input: string | undefined) {
   return `${days} d ago`
 }
 
+const currency = new Intl.NumberFormat('en-SG', {
+  style: 'currency',
+  currency: 'SGD',
+  maximumFractionDigits: 0,
+})
+
+function money(value: number) {
+  return currency.format(value)
+}
+
+function formatClockTime(input: string | undefined) {
+  if (!input) {
+    return ''
+  }
+
+  return new Date(input).toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
 function statusFromBranchStatus(status: NegotiationBranchStatus): Negotiation['status'] {
   if (status === 'queued') return 'Waiting'
   if (status === 'blocked' || status === 'walked_away' || status === 'reservation_blocked' || status === 'max_rounds_reached') {
@@ -168,7 +201,189 @@ function mapMessage(message: NegotiationMessageView): Message {
     body: message.content,
     amount: message.offerPrice ?? undefined,
     meta: [...reasoning, ...marketReferences].slice(0, 2),
+    createdAt: message.createdAt,
   }
+}
+
+function extractViolations(metadata: Record<string, unknown>) {
+  return Array.isArray(metadata.violations)
+    ? metadata.violations.filter((entry): entry is string => typeof entry === 'string')
+    : []
+}
+
+function mapAuditEventToMessage(
+  event: AuditEventView,
+  branch: NegotiationBranchView,
+): Message | null {
+  const metadata = event.metadata ?? {}
+  const violations = extractViolations(metadata)
+  const explanation =
+    typeof metadata.explanation === 'string' ? metadata.explanation : null
+
+  if (event.eventType === 'campaign_created') {
+    return {
+      id: `system-${event.id}`,
+      actor: 'DealRoom',
+      side: 'system',
+      type: 'status',
+      tone: 'neutral',
+      title: 'Negotiation branch created',
+      body: branch.marketContext
+        ? 'DealRoom created the branch and attached market evidence before opening the first round.'
+        : 'DealRoom created the branch and queued market-context loading before the first round.',
+      meta: ['Backend queued'],
+      createdAt: event.createdAt,
+    }
+  }
+
+  if (event.eventType === 'turn_approved') {
+    return {
+      id: `mediator-${event.id}`,
+      actor: 'Mediator Agent',
+      side: 'system',
+      type: 'approval',
+      tone: 'success',
+      title: 'Turn approved',
+      body:
+        explanation ??
+        'The mediator approved the latest turn after checking transparency, truthfulness, and guardrails.',
+      meta: violations.length > 0 ? violations.slice(0, 2) : ['Checks passed'],
+      createdAt: event.createdAt,
+    }
+  }
+
+  if (event.eventType === 'turn_rejected') {
+    const forActor =
+      typeof metadata.forActor === 'string' ? titleCase(metadata.forActor) : 'Agent'
+    const attempt =
+      typeof metadata.attempt === 'number' ? `Attempt ${metadata.attempt + 1}` : null
+
+    return {
+      id: `mediator-${event.id}`,
+      actor: 'Mediator Agent',
+      side: 'system',
+      type: 'status',
+      tone: 'warning',
+      title: `${forActor} turn rejected`,
+      body: violations.length > 0
+        ? `The mediator rejected this ${forActor.toLowerCase()} turn and requested regeneration. ${violations[0]}`
+        : `The mediator rejected this ${forActor.toLowerCase()} turn and requested a regenerated response.`,
+      meta: [attempt, `${violations.length || 1} issue${violations.length === 1 ? '' : 's'}`]
+        .filter((entry): entry is string => Boolean(entry)),
+      createdAt: event.createdAt,
+    }
+  }
+
+  if (event.eventType === 'turn_regeneration_exhausted') {
+    return {
+      id: `mediator-${event.id}`,
+      actor: 'Mediator Agent',
+      side: 'system',
+      type: 'status',
+      tone: 'warning',
+      title: 'Negotiation blocked',
+      body: 'The mediator exhausted regeneration attempts and halted this branch before another offer could be sent.',
+      meta: ['Branch blocked'],
+      createdAt: event.createdAt,
+    }
+  }
+
+  if (event.eventType === 'max_rounds_reached') {
+    return {
+      id: `system-${event.id}`,
+      actor: 'DealRoom',
+      side: 'system',
+      type: 'status',
+      tone: 'warning',
+      title: 'Maximum rounds reached',
+      body: 'The branch hit its round limit before a valid agreement could be approved.',
+      meta: ['Round cap reached'],
+      createdAt: event.createdAt,
+    }
+  }
+
+  if (event.eventType === 'final_deal_approved') {
+    return {
+      id: `system-${event.id}`,
+      actor: 'DealRoom',
+      side: 'system',
+      type: 'approval',
+      tone: 'success',
+      title: 'Final deal approved',
+      body: 'The approved negotiation outcome has been committed as the final backend deal.',
+      meta: ['Saved to backend'],
+      createdAt: event.createdAt,
+    }
+  }
+
+  return null
+}
+
+function marketContextMessage(branch: NegotiationBranchView): Message | null {
+  const marketContext = branch.marketContext
+  if (!marketContext) {
+    return null
+  }
+
+  const comparableTitles = marketContext.comparableListings
+    .slice(0, 2)
+    .map((entry) => entry.title)
+    .filter(Boolean)
+
+  return {
+    id: `market-context-${branch.id}`,
+    actor: marketContext.source === 'exa' ? 'Exa Service' : 'Market Fallback',
+    side: 'system',
+    type: 'status',
+    tone: marketContext.source === 'exa' ? 'verification' : 'warning',
+    title:
+      marketContext.source === 'exa'
+        ? 'Market evidence loaded'
+        : 'Fallback market range loaded',
+    body:
+      marketContext.source === 'exa'
+        ? `Exa queried "${marketContext.query}" and returned ${marketContext.comparableListings.length} comparable listings. Average ${money(marketContext.averagePrice)}, with a range from ${money(marketContext.lowestListing)} to ${money(marketContext.highestListing)}.${comparableTitles.length > 0 ? ` Sample matches: ${comparableTitles.join(', ')}.` : ''}`
+        : `Exa market data was unavailable, so DealRoom generated a fallback market range from the listing price. Average ${money(marketContext.averagePrice)}, with a range from ${money(marketContext.lowestListing)} to ${money(marketContext.highestListing)}.`,
+    meta: [
+      marketContext.source === 'exa' ? 'Source: Exa' : 'Source: fallback',
+      `Avg ${money(marketContext.averagePrice)}`,
+      `${marketContext.comparableListings.length} comps`,
+    ],
+    createdAt: marketContext.generatedAt,
+  }
+}
+
+function buildConversation(branch: NegotiationBranchView): Message[] {
+  const entries = [
+    marketContextMessage(branch),
+    ...branch.messages.map(mapMessage),
+    ...branch.auditEvents.map((event) => mapAuditEventToMessage(event, branch)),
+  ]
+    .filter((entry): entry is Message => Boolean(entry))
+    .map((entry) => ({
+      entry,
+      timestamp: entry.createdAt ? new Date(entry.createdAt).getTime() : 0,
+      order:
+        entry.actor === 'Exa Service' || entry.actor === 'Market Fallback'
+          ? 5
+          : entry.actor === 'DealRoom'
+            ? 10
+            : entry.side === 'buyer' || entry.side === 'seller'
+              ? 20
+              : entry.type === 'approval'
+                ? 30
+                : 25,
+    }))
+
+  entries.sort((left, right) => {
+    if (left.timestamp !== right.timestamp) {
+      return left.timestamp - right.timestamp
+    }
+
+    return left.order - right.order
+  })
+
+  return entries.map(({ entry }) => entry)
 }
 
 function laneFromAudit(eventType: string): AuditEvent['lane'] {
@@ -207,13 +422,12 @@ function mapAuditEvent(event: AuditEventView): AuditEvent {
 
 function mapTimeline(
   messages: Message[],
-  auditEvents: AuditEvent[],
   currentActor: 'buyer' | 'seller',
   branchStatus: NegotiationBranchView['status'],
 ): TimelineEvent[] {
   const messageEvents = messages.map((message) => ({
     id: `message-${message.id}`,
-    time: '',
+    time: formatClockTime(message.createdAt),
     title: message.title,
     detail: message.body,
     status: 'done' as const,
@@ -225,15 +439,6 @@ function mapTimeline(
           : message.type === 'approval'
             ? ('approval' as const)
             : ('check' as const),
-  }))
-
-  const auditTimeline = auditEvents.slice(-2).map((event, index) => ({
-    id: `audit-${event.id}`,
-    time: event.time,
-    title: event.action,
-    detail: event.evidence,
-    status: index === auditEvents.slice(-2).length - 1 ? 'active' as const : 'done' as const,
-    kind: event.lane === 'Approval' ? 'approval' as const : event.lane === 'Verification' ? 'check' as const : 'offer' as const,
   }))
 
   const nextAction: TimelineEvent = {
@@ -248,7 +453,84 @@ function mapTimeline(
     kind: branchStatus === 'agreement_reached' || branchStatus === 'approved' ? 'approval' : 'offer',
   }
 
-  return [...messageEvents, ...auditTimeline, nextAction].slice(-8)
+  return [...messageEvents, nextAction].slice(-8)
+}
+
+function nextActionFromBranch(branch: NegotiationBranchView): string {
+  if (branch.status === 'agreement_reached' || branch.status === 'approved') {
+    return 'Approve economics and delivery.'
+  }
+
+  if (branch.status === 'queued') {
+    return branch.marketContext
+      ? `Waiting on ${branch.state.currentActor} agent.`
+      : 'Loading Exa market context before the first turn.'
+  }
+
+  if (branch.status === 'blocked') {
+    return 'Mediator halted the branch after repeated validation failures.'
+  }
+
+  if (branch.status === 'walked_away') {
+    return 'The negotiation ended without agreement.'
+  }
+
+  if (branch.status === 'max_rounds_reached') {
+    return 'Review the branch because the round limit was reached.'
+  }
+
+  if (branch.state.lastMediatorDecision?.needsRegeneration) {
+    return 'Mediator requested a regenerated turn.'
+  }
+
+  return `Waiting on ${branch.state.currentActor} agent.`
+}
+
+function marketSummaryFromBranch(branch: NegotiationBranchView) {
+  if (!branch.marketContext) {
+    return {
+      label: 'Waiting for market context',
+      detail: 'DealRoom has created the branch and is waiting to load Exa market evidence before the first offer.',
+    }
+  }
+
+  return {
+    label:
+      branch.marketContext.source === 'exa'
+        ? `Exa avg ${money(branch.marketContext.averagePrice)}`
+        : `Fallback avg ${money(branch.marketContext.averagePrice)}`,
+    detail: `${branch.marketContext.query} · ${branch.marketContext.comparableListings.length} comps · Range ${money(branch.marketContext.lowestListing)}-${money(branch.marketContext.highestListing)}`,
+  }
+}
+
+function mediatorSummaryFromBranch(branch: NegotiationBranchView) {
+  if (branch.status === 'blocked') {
+    return {
+      label: 'Mediator blocked branch',
+      detail: 'Repeated validation failures exhausted regeneration attempts.',
+    }
+  }
+
+  if (branch.state.lastMediatorDecision?.approved) {
+    return {
+      label: 'Last mediator check approved',
+      detail: branch.state.lastMediatorDecision.explanation,
+    }
+  }
+
+  if (branch.state.lastMediatorDecision?.needsRegeneration) {
+    return {
+      label: 'Mediator requested regeneration',
+      detail:
+        branch.state.lastMediatorDecision.violations[0] ??
+        branch.state.lastMediatorDecision.explanation,
+    }
+  }
+
+  return {
+    label: 'Mediator waiting for first turn',
+    detail: 'Once an agent proposes terms, the mediator validates the turn before it reaches the other side.',
+  }
 }
 
 export function mapListingViewToCard(listing: MarketplaceListingView): Listing {
@@ -270,18 +552,20 @@ export function mapListingViewToCard(listing: MarketplaceListingView): Listing {
 }
 
 export function mapBranchToNegotiation(branch: NegotiationBranchView): Negotiation {
-  const latestMessage = branch.messages.at(-1)
+  const messages = buildConversation(branch)
+  const latestMessage = messages.at(-1)
   const currentOffer = branch.finalDeal?.finalPrice ?? branch.state.currentOffer?.price ?? branch.state.snapshot.listing.price
   const audit = branch.auditEvents.map(mapAuditEvent)
-  const messages = branch.messages.map(mapMessage)
   const priceDelta = currentOffer - branch.state.snapshot.listing.price
-  const timeline = mapTimeline(messages, audit, branch.state.currentActor, branch.status)
+  const timeline = mapTimeline(messages, branch.state.currentActor, branch.status)
 
   return {
     id: branch.id,
     listingId: branch.listingId,
     stage: titleCase(branch.status),
     status: statusFromBranchStatus(branch.status),
+    round: branch.state.round,
+    turnCount: branch.state.turnCount,
     askPrice: branch.state.snapshot.listing.price,
     liveOffer: currentOffer,
     priceDelta,
@@ -289,16 +573,13 @@ export function mapBranchToNegotiation(branch: NegotiationBranchView): Negotiati
     updatedAt: formatUpdatedAt(latestMessage?.createdAt ?? branch.auditEvents.at(-1)?.createdAt),
     buyerGuardrail: `Buyer cap ${branch.buyerBudget}.`,
     sellerSignal: `Seller floor ${branch.state.snapshot.sellerConfig.reservationValue.minimumAcceptablePrice}.`,
-    nextAction:
-      branch.status === 'agreement_reached' || branch.status === 'approved'
-        ? 'Approve economics and delivery.'
-        : branch.status === 'queued'
-          ? 'Waiting for backend start.'
-          : `Waiting on ${branch.state.currentActor} agent.`,
+    nextAction: nextActionFromBranch(branch),
     summary:
       branch.finalDeal
         ? `Close at ${branch.finalDeal.finalPrice}.`
-        : latestMessage?.content ?? 'Negotiation has been created.',
+        : latestMessage?.body ?? 'Negotiation has been created.',
+    marketSummary: marketSummaryFromBranch(branch),
+    mediatorSummary: mediatorSummaryFromBranch(branch),
     messages:
       messages.length > 0
         ? messages
@@ -308,6 +589,7 @@ export function mapBranchToNegotiation(branch: NegotiationBranchView): Negotiati
               actor: 'DealRoom',
               side: 'system',
               type: 'status',
+              tone: 'neutral',
               title: 'Negotiation created',
               body: 'The backend orchestration engine is preparing the first round.',
             },
@@ -333,6 +615,8 @@ export function createPlaceholderNegotiation(listing: Listing): Negotiation {
     listingId: listing.id,
     stage: 'No active negotiation',
     status: 'Waiting',
+    round: 0,
+    turnCount: 0,
     askPrice: listing.price,
     liveOffer: listing.price,
     priceDelta: 0,
@@ -342,12 +626,21 @@ export function createPlaceholderNegotiation(listing: Listing): Negotiation {
     sellerSignal: 'No seller strategy loaded yet.',
     nextAction: 'Start a backend negotiation.',
     summary: 'No campaign exists for this listing yet.',
+    marketSummary: {
+      label: 'No market context yet',
+      detail: 'Starting a branch triggers Exa market discovery before the first offer.',
+    },
+    mediatorSummary: {
+      label: 'Mediator idle',
+      detail: 'Mediator decisions will appear here once the first offer is generated.',
+    },
     messages: [
       {
         id: `placeholder-message-${listing.id}`,
         actor: 'DealRoom',
         side: 'system',
         type: 'status',
+        tone: 'neutral',
         title: 'Awaiting launch',
         body: 'Use Start from the marketplace to create the negotiation branch.',
       },
