@@ -7,7 +7,15 @@ import type {
   SellerAgentConfig,
 } from '../shared/negotiation'
 
-const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL as string | undefined) ?? 'http://127.0.0.1:8787'
+function normalizeApiBaseUrl(value: string | undefined): string {
+  const fallback = 'http://127.0.0.1:8787'
+  const rawValue = value?.trim() || fallback
+  const absoluteUrl = /^https?:\/\//i.test(rawValue) ? rawValue : `https://${rawValue}`
+
+  return absoluteUrl.replace(/\/+$/, '')
+}
+
+const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL as string | undefined)
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
