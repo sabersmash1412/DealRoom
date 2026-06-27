@@ -10,76 +10,115 @@ export class ExaService {
     listingPrice: number;
   }): Promise<MarketContextSnapshot> {
     if (!this.config.exaApiKey) {
+      console.warn("[ExaService] EXA_API_KEY is not configured. Using fallback market context.", {
+        title: input.title,
+        condition: input.condition,
+        listingPrice: input.listingPrice,
+      });
       return this.buildFallbackContext(input);
     }
 
     const query = `${input.title} ${input.condition} market price`;
-    const response = await fetch("https://api.exa.ai/search", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": this.config.exaApiKey,
+    const requestBody = {
+      query,
+      numResults: 5,
+      contents: {
+        highlights: true,
+        summary: true,
       },
-      body: JSON.stringify({
-        query,
-        numResults: 5,
-        contents: {
-          highlights: true,
-          summary: true,
-        },
-      }),
+    };
+
+    console.info("[ExaService] Calling Exa search API.", {
+      title: input.title,
+      condition: input.condition,
+      listingPrice: input.listingPrice,
+      requestBody,
     });
 
-    if (!response.ok) {
-      return this.buildFallbackContext(input);
-    }
+    try {
+      const response = await fetch("https://api.exa.ai/search", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": this.config.exaApiKey,
+        },
+        body: JSON.stringify(requestBody),
+      });
 
-    const payload = (await response.json()) as {
-      results?: Array<{
-        title?: string;
-        url?: string;
-        summary?: string;
-        text?: string;
-      }>;
-    };
+      if (!response.ok) {
+        const errorBody = await response.text();
+        console.warn("[ExaService] Exa search API returned a non-OK response. Using fallback market context.", {
+          status: response.status,
+          statusText: response.statusText,
+          body: errorBody,
+          query,
+        });
+        return this.buildFallbackContext(input);
+      }
 
-    const extractedPrices = (payload.results ?? [])
-      .map((result) => {
-        const combinedText = [result.title, result.summary, result.text].filter(Boolean).join(" ");
-        const match = combinedText.match(/\$?\b(\d{2,6})\b/g);
-        if (!match || match.length === 0) {
-          return null;
-        }
+      const payload = (await response.json()) as {
+        results?: Array<{
+          title?: string;
+          url?: string;
+          summary?: string;
+          text?: string;
+        }>;
+      };
 
-        const candidate = Number(match[0].replace(/[^\d]/g, ""));
-        return Number.isFinite(candidate) ? candidate : null;
-      })
-      .filter((value): value is number => value !== null);
+      console.info("[ExaService] Exa search API response payload.", payload);
 
-    if (extractedPrices.length === 0) {
-      return this.buildFallbackContext(input);
-    }
+      const extractedPrices = (payload.results ?? [])
+        .map((result) => {
+          const combinedText = [result.title, result.summary, result.text].filter(Boolean).join(" ");
+          const match = combinedText.match(/\$?\b(\d{2,6})\b/g);
+          if (!match || match.length === 0) {
+            return null;
+          }
 
-    const averagePrice = Math.round(
-      extractedPrices.reduce((sum, value) => sum + value, 0) / extractedPrices.length,
-    );
-    const lowestListing = Math.min(...extractedPrices);
-    const highestListing = Math.max(...extractedPrices);
+          const candidate = Number(match[0].replace(/[^\d]/g, ""));
+          return Number.isFinite(candidate) ? candidate : null;
+        })
+        .filter((value): value is number => value !== null);
 
-    return {
-      query,
-      averagePrice,
-      lowestListing,
-      highestListing,
-      comparableListings: (payload.results ?? []).slice(0, 4).map((result, index) => ({
-        title: result.title ?? `Comparable ${index + 1}`,
-        price: extractedPrices[index] ?? averagePrice,
-        url: result.url ?? null,
+      if (extractedPrices.length === 0) {
+        console.warn("[ExaService] Exa response did not yield any usable prices. Using fallback market context.", {
+          query,
+          payload,
+        });
+        return this.buildFallbackContext(input);
+      }
+
+      const averagePrice = Math.round(
+        extractedPrices.reduce((sum, value) => sum + value, 0) / extractedPrices.length,
+      );
+      const lowestListing = Math.min(...extractedPrices);
+      const highestListing = Math.max(...extractedPrices);
+
+      const marketContext: MarketContextSnapshot = {
+        query,
+        averagePrice,
+        lowestListing,
+        highestListing,
+        comparableListings: (payload.results ?? []).slice(0, 4).map((result, index) => ({
+          title: result.title ?? `Comparable ${index + 1}`,
+          price: extractedPrices[index] ?? averagePrice,
+          url: result.url ?? null,
+          source: "exa",
+        })),
+        generatedAt: new Date().toISOString(),
         source: "exa",
-      })),
-      generatedAt: new Date().toISOString(),
-      source: "exa",
-    };
+      };
+
+      console.info("[ExaService] Normalized market context from Exa response.", marketContext);
+
+      return marketContext;
+    } catch (error) {
+      console.error("[ExaService] Exa search API request failed. Using fallback market context.", {
+        query,
+        error,
+      });
+      return this.buildFallbackContext(input);
+    }
   }
 
   private buildFallbackContext(input: {
