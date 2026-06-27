@@ -525,7 +525,7 @@ function App() {
             </div>
             <div>
               <p className="text-[0.72rem] font-medium uppercase tracking-[0.08em] text-[color:var(--muted)]">
-                Agentic Dealroom
+                DealRoom
               </p>
               <h1 className="text-[1.18rem] font-semibold tracking-[-0.03em]">
                 Marketplace negotiation

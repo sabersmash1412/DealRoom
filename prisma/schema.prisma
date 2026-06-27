@@ -1,0 +1,104 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // If you use Prisma Migrate or db push, prefer a direct non-pooled Supabase URL.
+  // directUrl = env("DIRECT_URL")
+}
+
+model Listing {
+  id          String   @id @default(cuid())
+  title       String
+  description String?
+  price       Int
+  imageUrl    String?
+  condition   String
+  sellerId    String
+  seller      Seller   @relation(fields: [sellerId], references: [id])
+  createdAt   DateTime @default(now())
+
+  negotiations Negotiation[]
+}
+
+model Seller {
+  id          String   @id @default(cuid())
+  name        String
+  rating      Float
+  minPrice    Int
+  inventory   Int
+  deliveryDays Int
+  createdAt   DateTime @default(now())
+
+  listings Listing[]
+  negotiations Negotiation[]
+}
+
+model Negotiation {
+  id               String   @id @default(cuid())
+  listingId         String
+  sellerId          String
+  buyerBudget       Int
+  deliveryDeadline  String?
+  preferredVariant  String?
+  negotiationStyle  String
+  priority          String
+  status            String   @default("active")
+  marketContext     Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  listing Listing @relation(fields: [listingId], references: [id])
+  seller  Seller  @relation(fields: [sellerId], references: [id])
+
+  messages    NegotiationMessage[]
+  auditEvents AuditEvent[]
+  finalDeal   FinalDeal?
+}
+
+model NegotiationMessage {
+  id            String   @id @default(cuid())
+  negotiationId String
+  actor         String
+  type          String
+  content       String
+  offerPrice    Int?
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  negotiation Negotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+}
+
+model AuditEvent {
+  id            String   @id @default(cuid())
+  negotiationId String
+  actor         String
+  eventType     String
+  metadata      Json?
+  createdAt     DateTime @default(now())
+
+  negotiation Negotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+}
+
+model FinalDeal {
+  id             String   @id @default(cuid())
+  negotiationId  String   @unique
+  finalPrice     Int
+  originalPrice  Int
+  savings        Int
+  deliveryDate   String?
+  selectedVariant String?
+  verified       Boolean  @default(false)
+  approved       Boolean  @default(false)
+  createdAt      DateTime @default(now())
+
+  negotiation Negotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+}
