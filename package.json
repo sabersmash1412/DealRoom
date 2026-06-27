@@ -11,7 +11,8 @@
     "build:server": "tsc -p tsconfig.server.json",
     "lint": "eslint .",
     "preview": "vite preview",
-    "server:start": "node --env-file=.env dist-server/server/index.js"
+    "start": "node dist-server/server/index.js",
+    "server:start": "node --env-file-if-exists=.env dist-server/server/index.js"
   },
   "dependencies": {
     "@prisma/adapter-pg": "^7.8.0",
