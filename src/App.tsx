@@ -328,6 +328,52 @@ function getRangeStyle(value: number, min: number, max: number): CSSProperties {
   } as CSSProperties
 }
 
+type ProductVisualKind = 'furniture' | 'camera' | 'appliance' | 'electronics' | 'cycling' | 'default'
+
+function productVisualKind(listing: Listing): ProductVisualKind {
+  const category = listing.category.toLowerCase()
+  const title = listing.title.toLowerCase()
+
+  if (category.includes('furniture') || title.includes('chair') || title.includes('table')) {
+    return 'furniture'
+  }
+  if (category.includes('camera') || title.includes('camera')) {
+    return 'camera'
+  }
+  if (category.includes('appliance') || title.includes('coffee')) {
+    return 'appliance'
+  }
+  if (category.includes('electronics') || title.includes('monitor') || title.includes('display')) {
+    return 'electronics'
+  }
+  if (category.includes('cycling') || title.includes('bike') || title.includes('brompton')) {
+    return 'cycling'
+  }
+
+  return 'default'
+}
+
+function productVisualPalette(accent: Listing['accent']) {
+  if (accent === 'teal') {
+    return {
+      toneClass: 'product-scene-teal',
+      badgeClass: 'product-chip-teal',
+    }
+  }
+
+  if (accent === 'amber') {
+    return {
+      toneClass: 'product-scene-amber',
+      badgeClass: 'product-chip-amber',
+    }
+  }
+
+  return {
+    toneClass: 'product-scene-indigo',
+    badgeClass: 'product-chip-indigo',
+  }
+}
+
 function App() {
   const [activeScreen, setActiveScreen] = useState<Screen>('home')
   const [activeNegotiationId, setActiveNegotiationId] = useState<string | null>(null)
@@ -1029,6 +1075,7 @@ function MarketplaceHome({
         <section className="shell-panel overflow-hidden">
           <div className="grid gap-0 lg:grid-cols-[minmax(0,1.1fr)_320px]">
             <div className={`listing-hero listing-hero-${featuredListing.accent}`}>
+              <ProductArtwork listing={featuredListing} variant="hero" />
               <div className="flex h-full flex-col justify-end gap-3">
                 <span className="meta-pill">Featured listing</span>
                 <div>
@@ -1086,6 +1133,7 @@ function MarketplaceHome({
         {listings.map((listing) => (
           <article key={listing.id} className="listing-card">
             <div className={`listing-thumb listing-thumb-${listing.accent}`}>
+              <ProductArtwork listing={listing} variant="card" />
               <span className="meta-pill">{listing.inventory}</span>
             </div>
             <div className="space-y-2">
@@ -1136,6 +1184,111 @@ function MarketplaceHome({
         ))}
       </section>
     </>
+  )
+}
+
+function ProductArtwork({
+  listing,
+  variant,
+}: {
+  listing: Listing
+  variant: 'card' | 'hero'
+}) {
+  const kind = productVisualKind(listing)
+  const palette = productVisualPalette(listing.accent)
+  const isHero = variant === 'hero'
+
+  return (
+    <div className={`product-scene ${palette.toneClass} ${isHero ? 'product-scene-hero' : 'product-scene-card'}`} aria-hidden="true">
+      <div className="product-glow product-glow-left" />
+      <div className="product-glow product-glow-right" />
+      <div className="product-grid" />
+
+      <div className={`product-object-shell product-object-shell-${variant}`}>
+        {kind === 'furniture' ? <FurnitureMockup /> : null}
+        {kind === 'camera' ? <CameraMockup /> : null}
+        {kind === 'appliance' ? <ApplianceMockup /> : null}
+        {kind === 'electronics' ? <ElectronicsMockup /> : null}
+        {kind === 'cycling' ? <CyclingMockup /> : null}
+        {kind === 'default' ? <DefaultMockup /> : null}
+      </div>
+
+      <div className={`product-chip ${palette.badgeClass} product-chip-top`}>
+        <span className="product-chip-label">{listing.category}</span>
+      </div>
+    </div>
+  )
+}
+
+function FurnitureMockup() {
+  return (
+    <div className="product-object product-object-furniture">
+      <div className="furniture-back" />
+      <div className="furniture-seat" />
+      <div className="furniture-leg furniture-leg-left" />
+      <div className="furniture-leg furniture-leg-right" />
+      <div className="furniture-shadow" />
+    </div>
+  )
+}
+
+function CameraMockup() {
+  return (
+    <div className="product-object product-object-camera">
+      <div className="camera-body" />
+      <div className="camera-top" />
+      <div className="camera-lens-ring" />
+      <div className="camera-lens-core" />
+      <div className="camera-viewfinder" />
+      <div className="camera-flash" />
+    </div>
+  )
+}
+
+function ApplianceMockup() {
+  return (
+    <div className="product-object product-object-appliance">
+      <div className="appliance-frame" />
+      <div className="appliance-panel" />
+      <div className="appliance-spout" />
+      <div className="appliance-cup" />
+      <div className="appliance-base" />
+    </div>
+  )
+}
+
+function ElectronicsMockup() {
+  return (
+    <div className="product-object product-object-electronics">
+      <div className="electronics-screen" />
+      <div className="electronics-glow" />
+      <div className="electronics-stand" />
+      <div className="electronics-base" />
+    </div>
+  )
+}
+
+function CyclingMockup() {
+  return (
+    <div className="product-object product-object-cycling">
+      <div className="cycling-wheel cycling-wheel-left" />
+      <div className="cycling-wheel cycling-wheel-right" />
+      <div className="cycling-frame cycling-frame-top" />
+      <div className="cycling-frame cycling-frame-diagonal" />
+      <div className="cycling-frame cycling-frame-seat" />
+      <div className="cycling-bar" />
+      <div className="cycling-seat" />
+    </div>
+  )
+}
+
+function DefaultMockup() {
+  return (
+    <div className="product-object product-object-default">
+      <div className="default-box default-box-back" />
+      <div className="default-box default-box-front" />
+      <div className="default-tag" />
+    </div>
   )
 }
 
@@ -2208,17 +2361,11 @@ function MiniList({ title, items }: { title: string; items: string[] }) {
 
 function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
   const cardClass =
-    message.type === 'offer'
-      ? 'message-row-offer'
-      : message.type === 'counter'
-        ? 'message-row-counter'
-        : message.type === 'approval'
-          ? 'message-row-approval'
-          : message.tone === 'warning'
-            ? 'message-row-warning'
-            : message.tone === 'verification' || message.side === 'verification'
-            ? 'message-row-verification'
-            : 'message-row-system'
+    message.side === 'buyer'
+      ? 'message-row-buyer'
+      : message.side === 'seller'
+        ? 'message-row-seller'
+        : 'message-row-system'
 
   const wrapperClass =
     message.side === 'buyer'
@@ -2232,19 +2379,12 @@ function MessageRow({ message }: { message: Negotiation['messages'][number] }) {
       ? 'max-w-[32rem]'
       : 'max-w-[30rem]'
 
-  const metaTone =
-    message.side === 'buyer'
-      ? 'text-white/80'
-      : message.side === 'seller'
-        ? 'text-[color:var(--muted)]'
-        : 'text-[color:var(--muted)]'
-
   return (
     <article className={`flex ${wrapperClass}`}>
       <div className={`message-row ${cardClass} ${bubbleWidth}`}>
         <div className="flex items-start justify-between gap-3">
           <div>
-            <div className={`flex flex-wrap items-center gap-2 ${metaTone}`}>
+            <div className="message-row-meta flex flex-wrap items-center gap-2">
               <span className="text-[0.74rem] font-medium">{message.actor}</span>
               <span className="text-[0.7rem]">{labelForType(message.type)}</span>
               {message.createdAt ? (
