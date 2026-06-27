@@ -1,5 +1,5 @@
 import { startTransition, useDeferredValue, useEffect, useState } from 'react'
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import {
   approveNegotiation,
   createListing,
@@ -70,6 +70,8 @@ const defaultBuyerProfile: BuyerAgentProfile = {
     maxDeliveryDays: 3,
     minimumSellerRating: 4,
     preferredReturnPolicy: '14-day return policy',
+    communicationStyle: 'Calm, evidence-led, and concise.',
+    personaBrief: 'A disciplined buyer who protects budget, values delivery certainty, and prefers polite but firm negotiation.',
   },
 }
 
@@ -90,7 +92,15 @@ const defaultSellerConfig: SellerAgentConfig = {
   ],
   inventoryPressure: 'medium',
   customerSatisfactionTarget: 'medium',
+  communicationStyle: 'Professional, margin-aware, and direct.',
+  personaBrief: 'A pragmatic seller who protects floor price, preserves trust, and avoids unnecessary concessions.',
 }
+
+const strategyOptions: Array<BuyerAgentProfile['strategy']> = ['aggressive', 'balanced', 'time-sensitive']
+const inventoryPressureOptions: NonNullable<SellerAgentConfig['inventoryPressure']>[] = ['low', 'medium', 'high']
+const satisfactionOptions: NonNullable<SellerAgentConfig['customerSatisfactionTarget']>[] = ['low', 'medium', 'high']
+const WEIGHT_STEP = 0.05
+const TOTAL_WEIGHT_UNITS = Math.round(1 / WEIGHT_STEP)
 
 const defaultListingForm = {
   title: '',
@@ -110,6 +120,173 @@ const currency = new Intl.NumberFormat('en-US', {
   currency: 'SGD',
   maximumFractionDigits: 0,
 })
+
+function normalizeBuyerProfile(profile: BuyerAgentProfile): BuyerAgentProfile {
+  return {
+    ...profile,
+    userId: profile.userId || BUYER_USER_ID,
+    utilityWeights: normalizeWeightRecord({
+      price: profile.utilityWeights.price,
+      delivery: profile.utilityWeights.delivery,
+      reputation: profile.utilityWeights.reputation,
+      returns: profile.utilityWeights.returns,
+    }),
+    reservationValue: {
+      maximumBudget: profile.reservationValue.maximumBudget,
+    },
+    guardrails: profile.guardrails.filter((entry) => entry.trim().length > 0),
+    preferences: {
+      targetPrice: profile.preferences?.targetPrice,
+      maxDeliveryDays: profile.preferences?.maxDeliveryDays,
+      minimumSellerRating: profile.preferences?.minimumSellerRating,
+      preferredReturnPolicy: profile.preferences?.preferredReturnPolicy?.trim() || '',
+      communicationStyle: profile.preferences?.communicationStyle?.trim() || '',
+      personaBrief: profile.preferences?.personaBrief?.trim() || '',
+    },
+  }
+}
+
+function normalizeSellerConfig(config: SellerAgentConfig): SellerAgentConfig {
+  return {
+    ...config,
+    utilityWeights: normalizeWeightRecord({
+      profitMargin: config.utilityWeights.profitMargin,
+      inventoryClearance: config.utilityWeights.inventoryClearance,
+      customerSatisfaction: config.utilityWeights.customerSatisfaction,
+    }),
+    reservationValue: {
+      minimumAcceptablePrice: config.reservationValue.minimumAcceptablePrice,
+    },
+    guardrails: config.guardrails.filter((entry) => entry.trim().length > 0),
+    inventoryPressure: config.inventoryPressure ?? 'medium',
+    customerSatisfactionTarget: config.customerSatisfactionTarget ?? 'medium',
+    communicationStyle: config.communicationStyle?.trim() || '',
+    personaBrief: config.personaBrief?.trim() || '',
+  }
+}
+
+function splitLines(value: string) {
+  return value
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(Math.max(value, min), max)
+}
+
+function distributeUnits(keys: string[], totalUnits: number) {
+  if (keys.length === 0) {
+    return new Map<string, number>()
+  }
+
+  const baseUnits = Math.floor(totalUnits / keys.length)
+  let remainder = totalUnits - baseUnits * keys.length
+  const allocation = new Map<string, number>()
+
+  for (const key of keys) {
+    allocation.set(key, baseUnits + (remainder > 0 ? 1 : 0))
+    remainder = Math.max(0, remainder - 1)
+  }
+
+  return allocation
+}
+
+function allocateProportionalUnits(entries: Array<[string, number]>, totalUnits: number) {
+  const allocation = new Map<string, number>()
+  if (entries.length === 0) {
+    return allocation
+  }
+
+  const positiveTotal = entries.reduce((sum, [, value]) => sum + Math.max(0, value), 0)
+  if (positiveTotal <= 0) {
+    return distributeUnits(
+      entries.map(([key]) => key),
+      totalUnits,
+    )
+  }
+
+  const scaled = entries.map(([key, value]) => {
+    const normalized = (Math.max(0, value) / positiveTotal) * totalUnits
+    const units = Math.floor(normalized)
+    return {
+      key,
+      units,
+      remainder: normalized - units,
+    }
+  })
+
+  let remainingUnits = totalUnits - scaled.reduce((sum, entry) => sum + entry.units, 0)
+  scaled
+    .sort((left, right) => right.remainder - left.remainder)
+    .forEach((entry) => {
+      if (remainingUnits <= 0) {
+        return
+      }
+      entry.units += 1
+      remainingUnits -= 1
+    })
+
+  for (const entry of scaled) {
+    allocation.set(entry.key, entry.units)
+  }
+
+  return allocation
+}
+
+function normalizeWeightRecord<T extends { [K in keyof T]: number }>(weights: T): T {
+  const keys = Object.keys(weights) as Array<keyof T>
+  const allocation = allocateProportionalUnits(
+    keys.map((key) => [String(key), Number.isFinite(weights[key]) ? weights[key] : 0]),
+    TOTAL_WEIGHT_UNITS,
+  )
+
+  const normalized = {} as T
+  for (const key of keys) {
+    normalized[key] = (allocation.get(String(key)) ?? 0) * WEIGHT_STEP as T[keyof T]
+  }
+
+  return normalized
+}
+
+function rebalanceWeightRecord<T extends { [K in keyof T]: number }, K extends keyof T>(
+  current: T,
+  changedKey: K,
+  nextValue: number,
+): T {
+  const normalizedCurrent = normalizeWeightRecord(current)
+  const keys = Object.keys(normalizedCurrent) as Array<keyof T>
+  const nextUnits = Math.round(clamp(nextValue, 0, 1) / WEIGHT_STEP)
+  const clampedUnits = clamp(nextUnits, 0, TOTAL_WEIGHT_UNITS)
+  const otherKeys = keys.filter((key) => key !== changedKey)
+  const remainingUnits = TOTAL_WEIGHT_UNITS - clampedUnits
+  const otherAllocation = allocateProportionalUnits(
+    otherKeys.map((key) => [String(key), normalizedCurrent[key] / WEIGHT_STEP]),
+    remainingUnits,
+  )
+
+  const nextWeights = {} as T
+  for (const key of keys) {
+    if (key === changedKey) {
+      nextWeights[key] = clampedUnits * WEIGHT_STEP as T[keyof T]
+      continue
+    }
+
+    nextWeights[key] = (otherAllocation.get(String(key)) ?? 0) * WEIGHT_STEP as T[keyof T]
+  }
+
+  return nextWeights
+}
+
+function titleCase(value: string) {
+  return value
+    .replace(/_/g, ' ')
+    .split(' ')
+    .filter(Boolean)
+    .map((word) => word[0]!.toUpperCase() + word.slice(1))
+    .join(' ')
+}
 
 function mergeBranches(
   current: NegotiationBranchView[],
@@ -134,14 +311,28 @@ function listingIdForBranch(branches: NegotiationBranchView[], listingId: string
   return branches.find((branch) => branch.listingId === listingId)
 }
 
+function getSliderBounds(anchor: number, minOffset: number, maxOffset: number) {
+  return {
+    min: Math.max(100, anchor - minOffset),
+    max: anchor + maxOffset,
+  }
+}
+
+function getRangeStyle(value: number, min: number, max: number): CSSProperties {
+  const safeMax = max > min ? max : min + 1
+  const safeValue = clamp(value, min, safeMax)
+  const progress = ((safeValue - min) / (safeMax - min)) * 100
+
+  return {
+    ['--range-progress' as string]: `${progress}%`,
+  } as CSSProperties
+}
+
 function App() {
   const [activeScreen, setActiveScreen] = useState<Screen>('home')
   const [activeNegotiationId, setActiveNegotiationId] = useState<string | null>(null)
   const [activeListingId, setActiveListingId] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
-  const [buyerTarget, setBuyerTarget] = useState(defaultBuyerProfile.preferences?.targetPrice ?? 1825)
-  const [buyerCap, setBuyerCap] = useState(defaultBuyerProfile.reservationValue.maximumBudget)
-  const [sellerFloor, setSellerFloor] = useState(defaultSellerConfig.reservationValue.minimumAcceptablePrice)
   const [autoApprove, setAutoApprove] = useState(false)
   const [draftInstruction, setDraftInstruction] = useState(
     'Backend uses saved buyer and seller configuration only. Refresh the branch after saving rule changes.',
@@ -150,6 +341,11 @@ function App() {
   const [branches, setBranches] = useState<NegotiationBranchView[]>([])
   const [buyerProfile, setBuyerProfile] = useState<BuyerAgentProfile>(defaultBuyerProfile)
   const [sellerConfig, setSellerConfig] = useState<SellerAgentConfig>(defaultSellerConfig)
+  const [sliderAnchors, setSliderAnchors] = useState({
+    buyerTarget: defaultBuyerProfile.preferences?.targetPrice ?? 1825,
+    buyerCap: defaultBuyerProfile.reservationValue.maximumBudget,
+    sellerFloor: defaultSellerConfig.reservationValue.minimumAcceptablePrice,
+  })
   const [isLoading, setIsLoading] = useState(true)
   const [isSavingRules, setIsSavingRules] = useState(false)
   const [isStartingNegotiation, setIsStartingNegotiation] = useState(false)
@@ -227,10 +423,13 @@ function App() {
       setListings(mappedListings)
       setBranches(negotiationViews)
 
-      const profile = savedBuyerProfile ?? defaultBuyerProfile
+      const profile = normalizeBuyerProfile(savedBuyerProfile ?? defaultBuyerProfile)
       setBuyerProfile(profile)
-      setBuyerTarget(profile.preferences?.targetPrice ?? defaultBuyerProfile.preferences?.targetPrice ?? 1825)
-      setBuyerCap(profile.reservationValue.maximumBudget)
+      setSliderAnchors((current) => ({
+        ...current,
+        buyerTarget: profile.preferences?.targetPrice ?? defaultBuyerProfile.preferences?.targetPrice ?? 1825,
+        buyerCap: profile.reservationValue.maximumBudget,
+      }))
 
       if (mappedListings.length > 0) {
         setActiveListingId(mappedListings[0].id)
@@ -250,11 +449,19 @@ function App() {
   async function loadSellerConfig(sellerId: string) {
     try {
       const config = await fetchSellerConfig(sellerId)
-      setSellerConfig(config)
-      setSellerFloor(config.reservationValue.minimumAcceptablePrice)
+      const normalizedConfig = normalizeSellerConfig(config)
+      setSellerConfig(normalizedConfig)
+      setSliderAnchors((current) => ({
+        ...current,
+        sellerFloor: normalizedConfig.reservationValue.minimumAcceptablePrice,
+      }))
     } catch (error) {
-      setSellerConfig(defaultSellerConfig)
-      setSellerFloor(defaultSellerConfig.reservationValue.minimumAcceptablePrice)
+      const fallbackConfig = normalizeSellerConfig(defaultSellerConfig)
+      setSellerConfig(fallbackConfig)
+      setSliderAnchors((current) => ({
+        ...current,
+        sellerFloor: fallbackConfig.reservationValue.minimumAcceptablePrice,
+      }))
       setErrorMessage(error instanceof Error ? error.message : 'Failed to load seller configuration.')
     }
   }
@@ -279,24 +486,12 @@ function App() {
     setErrorMessage(null)
     setNotice(null)
 
-    const nextBuyerProfile: BuyerAgentProfile = {
+    const nextBuyerProfile = normalizeBuyerProfile({
       ...buyerProfile,
       userId: BUYER_USER_ID,
-      reservationValue: {
-        maximumBudget: buyerCap,
-      },
-      preferences: {
-        ...buyerProfile.preferences,
-        targetPrice: buyerTarget,
-      },
-    }
+    })
 
-    const nextSellerConfig: SellerAgentConfig = {
-      ...sellerConfig,
-      reservationValue: {
-        minimumAcceptablePrice: sellerFloor,
-      },
-    }
+    const nextSellerConfig = normalizeSellerConfig(sellerConfig)
 
     try {
       const [savedBuyer, savedSeller] = await Promise.all([
@@ -304,8 +499,16 @@ function App() {
         saveSellerConfig(activeListing.sellerId, nextSellerConfig),
       ])
 
-      setBuyerProfile(savedBuyer)
-      setSellerConfig(savedSeller)
+      const normalizedBuyer = normalizeBuyerProfile(savedBuyer)
+      const normalizedSeller = normalizeSellerConfig(savedSeller)
+
+      setBuyerProfile(normalizedBuyer)
+      setSellerConfig(normalizedSeller)
+      setSliderAnchors({
+        buyerTarget: normalizedBuyer.preferences?.targetPrice ?? defaultBuyerProfile.preferences?.targetPrice ?? 1825,
+        buyerCap: normalizedBuyer.reservationValue.maximumBudget,
+        sellerFloor: normalizedSeller.reservationValue.minimumAcceptablePrice,
+      })
       setNotice('Buyer and seller agent rules are saved to the backend.')
     } catch (error) {
       setErrorMessage(error instanceof Error ? error.message : 'Failed to save backend rules.')
@@ -319,17 +522,10 @@ function App() {
     setErrorMessage(null)
     setNotice(null)
 
-    const currentBuyerProfile: BuyerAgentProfile = {
+    const currentBuyerProfile = normalizeBuyerProfile({
       ...buyerProfile,
       userId: BUYER_USER_ID,
-      reservationValue: {
-        maximumBudget: buyerCap,
-      },
-      preferences: {
-        ...buyerProfile.preferences,
-        targetPrice: buyerTarget,
-      },
-    }
+    })
 
     try {
       const campaign = await createNegotiationCampaign({
@@ -606,15 +802,14 @@ function App() {
 
             {!isLoading && activeScreen === 'agents' && activeListing ? (
               <AgentConfiguration
-                buyerTarget={buyerTarget}
-                buyerCap={buyerCap}
-                sellerFloor={sellerFloor}
+                buyerProfile={buyerProfile}
+                sellerConfig={sellerConfig}
+                sliderAnchors={sliderAnchors}
                 autoApprove={autoApprove}
                 sellerName={activeListing.seller}
                 isSaving={isSavingRules}
-                onBuyerTargetChange={setBuyerTarget}
-                onBuyerCapChange={setBuyerCap}
-                onSellerFloorChange={setSellerFloor}
+                onBuyerProfileChange={setBuyerProfile}
+                onSellerConfigChange={setSellerConfig}
                 onAutoApproveChange={setAutoApprove}
                 onSave={handleSaveRules}
               />
@@ -945,35 +1140,64 @@ function MarketplaceHome({
 }
 
 function AgentConfiguration({
-  buyerTarget,
-  buyerCap,
-  sellerFloor,
+  buyerProfile,
+  sellerConfig,
+  sliderAnchors,
   autoApprove,
   sellerName,
   isSaving,
-  onBuyerTargetChange,
-  onBuyerCapChange,
-  onSellerFloorChange,
+  onBuyerProfileChange,
+  onSellerConfigChange,
   onAutoApproveChange,
   onSave,
 }: {
-  buyerTarget: number
-  buyerCap: number
-  sellerFloor: number
+  buyerProfile: BuyerAgentProfile
+  sellerConfig: SellerAgentConfig
+  sliderAnchors: {
+    buyerTarget: number
+    buyerCap: number
+    sellerFloor: number
+  }
   autoApprove: boolean
   sellerName: string
   isSaving: boolean
-  onBuyerTargetChange: (value: number) => void
-  onBuyerCapChange: (value: number) => void
-  onSellerFloorChange: (value: number) => void
+  onBuyerProfileChange: (value: BuyerAgentProfile) => void
+  onSellerConfigChange: (value: SellerAgentConfig) => void
   onAutoApproveChange: (value: boolean) => void
   onSave: () => void
 }) {
+  const buyerPreferences = buyerProfile.preferences ?? {}
+  const openingTargetBounds = getSliderBounds(sliderAnchors.buyerTarget, 400, 200)
+  const hardCapBounds = getSliderBounds(sliderAnchors.buyerCap, 400, 200)
+  const sellerFloorBounds = getSliderBounds(sliderAnchors.sellerFloor, 400, 200)
+  const buyerWeightTotal = Object.values(buyerProfile.utilityWeights).reduce((sum, value) => sum + value, 0)
+  const sellerWeightTotal = Object.values(sellerConfig.utilityWeights).reduce((sum, value) => sum + value, 0)
+
+  function updateBuyerWeights(
+    key: keyof BuyerAgentProfile['utilityWeights'],
+    value: number,
+  ) {
+    onBuyerProfileChange({
+      ...buyerProfile,
+      utilityWeights: rebalanceWeightRecord(buyerProfile.utilityWeights, key, value),
+    })
+  }
+
+  function updateSellerWeights(
+    key: keyof SellerAgentConfig['utilityWeights'],
+    value: number,
+  ) {
+    onSellerConfigChange({
+      ...sellerConfig,
+      utilityWeights: rebalanceWeightRecord(sellerConfig.utilityWeights, key, value),
+    })
+  }
+
   return (
     <>
       <SectionHeader
         title="Agents"
-        description="Buyer and seller rules are saved into the backend agent configuration."
+        description="Configure the actual buyer and seller profiles that the backend injects into every negotiation turn."
         actions={
           <button type="button" className="button-primary" onClick={onSave} disabled={isSaving}>
             {isSaving ? 'Saving…' : 'Save rules'}
@@ -985,29 +1209,171 @@ function AgentConfiguration({
         <article className="shell-panel px-4 py-4">
           <PanelTitle title="Buyer" badge="Buyer side" />
           <div className="mt-4 space-y-5">
-            <SliderField
-              label="Opening target"
-              value={buyerTarget}
-              min={Math.max(100, buyerTarget - 400)}
-              max={buyerTarget + 200}
-              step={25}
-              onChange={onBuyerTargetChange}
+            <TextField
+              label="Buyer display name"
+              value={buyerProfile.displayName ?? ''}
+              onChange={(value) =>
+                onBuyerProfileChange({
+                  ...buyerProfile,
+                  displayName: value,
+                })
+              }
             />
-            <SliderField
-              label="Hard cap"
-              value={buyerCap}
-              min={Math.max(100, buyerCap - 400)}
-              max={buyerCap + 200}
-              step={5}
-              onChange={onBuyerCapChange}
+            <SelectField
+              label="Negotiation strategy"
+              value={buyerProfile.strategy}
+              options={strategyOptions.map((option) => ({
+                value: option,
+                label: titleCase(option),
+              }))}
+              onChange={(value) =>
+                onBuyerProfileChange({
+                  ...buyerProfile,
+                  strategy: value as BuyerAgentProfile['strategy'],
+                })
+              }
             />
-            <MiniList
-              title="Guardrails"
-              items={[
-                'Keep a 24-hour inspection window.',
-                'Do not trade verified accessories.',
-                'Rebuild the buyer agent from saved config every round.',
-              ]}
+            <div className="grid gap-4 md:grid-cols-2">
+              <SliderField
+                label="Opening target"
+                value={buyerPreferences.targetPrice ?? defaultBuyerProfile.preferences?.targetPrice ?? 1825}
+                min={openingTargetBounds.min}
+                max={openingTargetBounds.max}
+                step={25}
+                onChange={(value) =>
+                  onBuyerProfileChange({
+                    ...buyerProfile,
+                    preferences: {
+                      ...buyerPreferences,
+                      targetPrice: value,
+                    },
+                  })
+                }
+              />
+              <SliderField
+                label="Hard cap"
+                value={buyerProfile.reservationValue.maximumBudget}
+                min={hardCapBounds.min}
+                max={hardCapBounds.max}
+                step={5}
+                onChange={(value) =>
+                  onBuyerProfileChange({
+                    ...buyerProfile,
+                    reservationValue: {
+                      maximumBudget: value,
+                    },
+                  })
+                }
+              />
+              <NumberField
+                label="Max delivery days"
+                value={buyerPreferences.maxDeliveryDays ?? defaultBuyerProfile.preferences?.maxDeliveryDays ?? 3}
+                onChange={(value) =>
+                  onBuyerProfileChange({
+                    ...buyerProfile,
+                    preferences: {
+                      ...buyerPreferences,
+                      maxDeliveryDays: value,
+                    },
+                  })
+                }
+              />
+              <NumberField
+                label="Minimum seller rating"
+                value={buyerPreferences.minimumSellerRating ?? defaultBuyerProfile.preferences?.minimumSellerRating ?? 4}
+                step={0.1}
+                onChange={(value) =>
+                  onBuyerProfileChange({
+                    ...buyerProfile,
+                    preferences: {
+                      ...buyerPreferences,
+                      minimumSellerRating: value,
+                    },
+                  })
+                }
+              />
+            </div>
+
+            <div>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">Utility allocation</p>
+                <span className="meta-pill">{Math.round(buyerWeightTotal * 100)}% total</span>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+              <WeightSliderField
+                label="Price priority"
+                value={buyerProfile.utilityWeights.price}
+                onChange={(value) => updateBuyerWeights('price', value)}
+              />
+              <WeightSliderField
+                label="Delivery priority"
+                value={buyerProfile.utilityWeights.delivery}
+                onChange={(value) => updateBuyerWeights('delivery', value)}
+              />
+              <WeightSliderField
+                label="Reputation priority"
+                value={buyerProfile.utilityWeights.reputation}
+                onChange={(value) => updateBuyerWeights('reputation', value)}
+              />
+              <WeightSliderField
+                label="Returns priority"
+                value={buyerProfile.utilityWeights.returns}
+                onChange={(value) => updateBuyerWeights('returns', value)}
+              />
+              </div>
+            </div>
+
+            <TextField
+              label="Preferred return policy"
+              value={buyerPreferences.preferredReturnPolicy ?? ''}
+              onChange={(value) =>
+                onBuyerProfileChange({
+                  ...buyerProfile,
+                  preferences: {
+                    ...buyerPreferences,
+                    preferredReturnPolicy: value,
+                  },
+                })
+              }
+            />
+            <TextField
+              label="Communication style"
+              value={buyerPreferences.communicationStyle ?? ''}
+              onChange={(value) =>
+                onBuyerProfileChange({
+                  ...buyerProfile,
+                  preferences: {
+                    ...buyerPreferences,
+                    communicationStyle: value,
+                  },
+                })
+              }
+            />
+            <TextAreaField
+              label="Persona brief"
+              value={buyerPreferences.personaBrief ?? ''}
+              rows={3}
+              onChange={(value) =>
+                onBuyerProfileChange({
+                  ...buyerProfile,
+                  preferences: {
+                    ...buyerPreferences,
+                    personaBrief: value,
+                  },
+                })
+              }
+            />
+            <TextAreaField
+              label="Guardrails"
+              value={buyerProfile.guardrails.join('\n')}
+              hint="One rule per line. These are injected into the buyer agent profile."
+              rows={4}
+              onChange={(value) =>
+                onBuyerProfileChange({
+                  ...buyerProfile,
+                  guardrails: splitLines(value),
+                })
+              }
             />
           </div>
         </article>
@@ -1015,13 +1381,123 @@ function AgentConfiguration({
         <article className="shell-panel px-4 py-4">
           <PanelTitle title="Seller" badge={sellerName} />
           <div className="mt-4 space-y-5">
-            <SliderField
-              label="Minimum item price"
-              value={sellerFloor}
-              min={Math.max(100, sellerFloor - 400)}
-              max={sellerFloor + 200}
-              step={5}
-              onChange={onSellerFloorChange}
+            <SelectField
+              label="Negotiation strategy"
+              value={sellerConfig.strategy}
+              options={strategyOptions.map((option) => ({
+                value: option,
+                label: titleCase(option),
+              }))}
+              onChange={(value) =>
+                onSellerConfigChange({
+                  ...sellerConfig,
+                  strategy: value as SellerAgentConfig['strategy'],
+                })
+              }
+            />
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <SliderField
+                label="Minimum item price"
+                value={sellerConfig.reservationValue.minimumAcceptablePrice}
+                min={sellerFloorBounds.min}
+                max={sellerFloorBounds.max}
+                step={5}
+                onChange={(value) =>
+                  onSellerConfigChange({
+                    ...sellerConfig,
+                    reservationValue: {
+                      minimumAcceptablePrice: value,
+                    },
+                  })
+                }
+              />
+              <SelectField
+                label="Inventory pressure"
+                value={sellerConfig.inventoryPressure ?? 'medium'}
+                options={inventoryPressureOptions.map((option) => ({
+                  value: option,
+                  label: titleCase(option),
+                }))}
+                onChange={(value) =>
+                  onSellerConfigChange({
+                    ...sellerConfig,
+                    inventoryPressure: value as NonNullable<SellerAgentConfig['inventoryPressure']>,
+                  })
+                }
+              />
+              <SelectField
+                label="Customer satisfaction target"
+                value={sellerConfig.customerSatisfactionTarget ?? 'medium'}
+                options={satisfactionOptions.map((option) => ({
+                  value: option,
+                  label: titleCase(option),
+                }))}
+                onChange={(value) =>
+                  onSellerConfigChange({
+                    ...sellerConfig,
+                    customerSatisfactionTarget: value as NonNullable<SellerAgentConfig['customerSatisfactionTarget']>,
+                  })
+                }
+              />
+              <TextField
+                label="Communication style"
+                value={sellerConfig.communicationStyle ?? ''}
+                onChange={(value) =>
+                  onSellerConfigChange({
+                    ...sellerConfig,
+                    communicationStyle: value,
+                  })
+                }
+              />
+            </div>
+
+            <div>
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">Utility allocation</p>
+                <span className="meta-pill">{Math.round(sellerWeightTotal * 100)}% total</span>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+              <WeightSliderField
+                label="Margin priority"
+                value={sellerConfig.utilityWeights.profitMargin}
+                onChange={(value) => updateSellerWeights('profitMargin', value)}
+              />
+              <WeightSliderField
+                label="Inventory clearance"
+                value={sellerConfig.utilityWeights.inventoryClearance}
+                onChange={(value) => updateSellerWeights('inventoryClearance', value)}
+              />
+              <WeightSliderField
+                label="Customer satisfaction"
+                value={sellerConfig.utilityWeights.customerSatisfaction}
+                onChange={(value) => updateSellerWeights('customerSatisfaction', value)}
+              />
+              </div>
+            </div>
+
+            <TextAreaField
+              label="Persona brief"
+              value={sellerConfig.personaBrief ?? ''}
+              rows={3}
+              onChange={(value) =>
+                onSellerConfigChange({
+                  ...sellerConfig,
+                  personaBrief: value,
+                })
+              }
+            />
+            <TextAreaField
+              label="Guardrails"
+              value={sellerConfig.guardrails.join('\n')}
+              hint="One rule per line. These are injected into the seller config."
+              rows={4}
+              onChange={(value) =>
+                onSellerConfigChange({
+                  ...sellerConfig,
+                  guardrails: splitLines(value),
+                })
+              }
             />
 
             <div className="flex items-center justify-between gap-4 border-t border-[color:var(--line)] pt-4">
@@ -1046,9 +1522,9 @@ function AgentConfiguration({
             <MiniList
               title="Backend notes"
               items={[
-                'Seller defaults are saved against the active seller.',
-                'Reservation values are enforced server-side on every turn.',
-                'Mediator validation runs before any turn reaches the UI.',
+                'Every saved field is injected into the next negotiation prompt.',
+                'Utility weights shape how each side optimizes a deal.',
+                'Guardrails and persona fields affect tone but do not override hard constraints.',
               ]}
             />
           </div>
@@ -1148,9 +1624,9 @@ function NegotiationWorkspace({
   onRefresh: () => void
   onViewFinalDeal: () => void
 }) {
-  const visibleMessages = negotiation.messages.slice(-8)
-  const hiddenMessageCount = negotiation.messages.length - visibleMessages.length
   const visibleTimeline = negotiation.timeline.slice(-4)
+  const hasAgreement =
+    negotiation.stage === 'Agreement Reached' || negotiation.stage === 'Approved'
 
   return (
     <>
@@ -1212,18 +1688,42 @@ function NegotiationWorkspace({
                 </span>
               </div>
 
-              <div className="mt-4 space-y-3">
-                {hiddenMessageCount > 0 ? (
-                  <div className="rounded-xl bg-[color:var(--surface-muted)] px-3 py-2 text-[0.76rem] text-[color:var(--muted)]">
-                    Earlier rounds · {hiddenMessageCount} hidden
-                  </div>
-                ) : null}
-
-                {visibleMessages.map((message) => (
+              <div className="mt-4 max-h-[42rem] space-y-3 overflow-y-auto pr-1">
+                {negotiation.messages.map((message) => (
                   <MessageRow key={message.id} message={message} />
                 ))}
               </div>
             </div>
+
+            {hasAgreement ? (
+              <div className="mt-4 rounded-[1rem] border border-[color:var(--line)] bg-[color:var(--surface)] px-4 py-4">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <p className="text-[0.72rem] uppercase tracking-[0.08em] text-[color:var(--muted)]">
+                      Final agreement reached
+                    </p>
+                    <h3 className="mt-1 text-[1rem] font-semibold tracking-[-0.02em] text-[color:var(--ink)]">
+                      Contract ready for review
+                    </h3>
+                    <p className="mt-1 text-[0.8rem] text-[color:var(--muted)]">
+                      The buyer and seller have matching terms. Review the contract below, then open Final deal to approve it.
+                    </p>
+                  </div>
+                  <button type="button" className="button-primary" onClick={onViewFinalDeal}>
+                    Go to final deal
+                  </button>
+                </div>
+
+                <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                  <ContractPoint label="Final price" value={money(negotiation.finalDeal.itemPrice)} />
+                  <ContractPoint label="Original ask" value={money(negotiation.finalDeal.originalAsk)} />
+                  <ContractPoint label="Savings" value={money(negotiation.finalDeal.originalAsk - negotiation.finalDeal.itemPrice)} />
+                  <ContractPoint label="Delivery" value={negotiation.finalDeal.pickupWindow} />
+                  <ContractPoint label="Return policy" value={negotiation.finalDeal.returnPolicy} />
+                  <ContractPoint label="Inspection" value={negotiation.finalDeal.inspection} />
+                </div>
+              </div>
+            ) : null}
 
             <div className="mt-4 border-t border-[color:var(--line)] pt-4">
               <div className="flex items-center justify-between gap-3">
@@ -1351,28 +1851,32 @@ function FinalDealScreen({
           <div className="mt-4 grid gap-2 md:grid-cols-3">
             <InlineStat label="Item" value={money(negotiation.finalDeal.itemPrice)} />
             <InlineStat label="Delivery" value={money(negotiation.finalDeal.deliveryFee)} />
-            <InlineStat label="Delta" value={money(negotiation.priceDelta)} />
+            <InlineStat label="Savings" value={money(negotiation.finalDeal.originalAsk - negotiation.finalDeal.itemPrice)} />
           </div>
 
-          <div className="mt-5 grid gap-4 lg:grid-cols-2">
-            <MiniList
-              title="Terms"
-              items={[
-                negotiation.finalDeal.pickupWindow,
-                negotiation.finalDeal.inspection,
-                negotiation.finalDeal.protection,
-                negotiation.finalDeal.seller,
-              ]}
-            />
-            <MiniList
-              title="Why it clears"
-              items={[
-                'Budget guardrails are enforced by the backend.',
-                'Mediator validation passed before the offer reached the UI.',
-                'The final branch state is persisted in Supabase.',
-                'Approval writes the final deal back to the backend.',
-              ]}
-            />
+          <div className="mt-5 rounded-2xl border border-[color:var(--line)] bg-[color:var(--surface-subtle)] px-4 py-4">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[0.72rem] uppercase tracking-[0.08em] text-[color:var(--muted)]">
+                  Final contract
+                </p>
+                <p className="mt-1 text-[0.8rem] text-[color:var(--muted)]">
+                  Review the agreed commercial terms before approving.
+                </p>
+              </div>
+              <span className="meta-pill">Bullet summary</span>
+            </div>
+
+            <div className="mt-4 grid gap-3 md:grid-cols-2">
+              <ContractPoint label="Final item price" value={money(negotiation.finalDeal.itemPrice)} />
+              <ContractPoint label="Original ask price" value={money(negotiation.finalDeal.originalAsk)} />
+              <ContractPoint label="Savings secured" value={money(negotiation.finalDeal.originalAsk - negotiation.finalDeal.itemPrice)} />
+              <ContractPoint label="Delivery window" value={negotiation.finalDeal.pickupWindow} />
+              <ContractPoint label="Return policy" value={negotiation.finalDeal.returnPolicy} />
+              <ContractPoint label="Inspection rule" value={negotiation.finalDeal.inspection} />
+              <ContractPoint label="Seller" value={negotiation.finalDeal.seller} />
+              <ContractPoint label="Verification" value={negotiation.finalDeal.protection} />
+            </div>
           </div>
         </article>
 
@@ -1514,12 +2018,14 @@ function SliderField({
   step: number
   onChange: (value: number) => void
 }) {
+  const safeValue = clamp(value, min, max)
+
   return (
     <label className="block">
       <div className="flex items-center justify-between gap-3">
         <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">{label}</p>
         <span className="text-[0.8rem] font-medium text-[color:var(--muted)]">
-          {money(value)}
+          {money(safeValue)}
         </span>
       </div>
       <input
@@ -1527,13 +2033,53 @@ function SliderField({
         min={min}
         max={max}
         step={step}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        className="mt-3 h-1.5 w-full cursor-pointer accent-[color:var(--primary)]"
+        value={safeValue}
+        onChange={(event) => onChange(clamp(Number(event.target.value), min, max))}
+        style={getRangeStyle(safeValue, min, max)}
+        className="range-field mt-3"
       />
       <div className="mt-2 flex justify-between text-[0.72rem] text-[color:var(--muted)]">
         <span>{money(min)}</span>
         <span>{money(max)}</span>
+      </div>
+    </label>
+  )
+}
+
+function WeightSliderField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number
+  onChange: (value: number) => void
+}) {
+  const min = 0
+  const max = 1
+  const safeValue = clamp(value, min, max)
+
+  return (
+    <label className="block">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">{label}</p>
+        <span className="text-[0.8rem] font-medium text-[color:var(--muted)]">
+          {Math.round(safeValue * 100)}%
+        </span>
+      </div>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={0.05}
+        value={safeValue}
+        onChange={(event) => onChange(clamp(Number(event.target.value), min, max))}
+        style={getRangeStyle(safeValue, min, max)}
+        className="range-field mt-3"
+      />
+      <div className="mt-2 flex justify-between text-[0.72rem] text-[color:var(--muted)]">
+        <span>Low</span>
+        <span>High</span>
       </div>
     </label>
   )
@@ -1561,6 +2107,35 @@ function TextField({
   )
 }
 
+function SelectField({
+  label,
+  value,
+  options,
+  onChange,
+}: {
+  label: string
+  value: string
+  options: Array<{ value: string; label: string }>
+  onChange: (value: string) => void
+}) {
+  return (
+    <label className="block">
+      <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">{label}</p>
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-3 h-11 w-full rounded-xl border border-[color:var(--line)] bg-[color:var(--surface-subtle)] px-3 text-[0.82rem] text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>
+            {option.label}
+          </option>
+        ))}
+      </select>
+    </label>
+  )
+}
+
 function NumberField({
   label,
   value,
@@ -1581,6 +2156,35 @@ function NumberField({
         step={step}
         onChange={(event) => onChange(Number(event.target.value))}
         className="mt-3 h-11 w-full rounded-xl bg-[color:var(--surface-subtle)] px-3 text-[0.82rem] text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
+      />
+    </label>
+  )
+}
+
+function TextAreaField({
+  label,
+  value,
+  onChange,
+  rows = 4,
+  hint,
+}: {
+  label: string
+  value: string
+  onChange: (value: string) => void
+  rows?: number
+  hint?: string
+}) {
+  return (
+    <label className="block">
+      <div className="flex items-center justify-between gap-3">
+        <p className="text-[0.82rem] font-medium text-[color:var(--ink)]">{label}</p>
+        {hint ? <span className="text-[0.72rem] text-[color:var(--muted)]">{hint}</span> : null}
+      </div>
+      <textarea
+        rows={rows}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="mt-3 w-full rounded-xl bg-[color:var(--surface-subtle)] px-3 py-3 text-[0.82rem] leading-5 text-[color:var(--ink)] outline-none transition-shadow focus-visible:ring-4 focus-visible:ring-[color:var(--ring)]"
       />
     </label>
   )
@@ -1691,6 +2295,25 @@ function AutomationCard({
       </p>
       <p className="mt-1 text-[0.82rem] font-medium text-[color:var(--ink)]">{title}</p>
       <p className="mt-2 text-[0.76rem] leading-5 text-[color:var(--muted)]">{detail}</p>
+    </div>
+  )
+}
+
+function ContractPoint({
+  label,
+  value,
+}: {
+  label: string
+  value: string
+}) {
+  return (
+    <div className="rounded-xl border border-[color:var(--line)] bg-[color:var(--surface)] px-3 py-3">
+      <p className="text-[0.7rem] uppercase tracking-[0.08em] text-[color:var(--muted)]">
+        {label}
+      </p>
+      <p className="mt-1 text-[0.82rem] font-medium leading-5 text-[color:var(--ink)]">
+        {value}
+      </p>
     </div>
   )
 }

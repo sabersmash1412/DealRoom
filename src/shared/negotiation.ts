@@ -52,6 +52,8 @@ export interface BuyerPreferences {
   maxDeliveryDays?: number;
   minimumSellerRating?: number;
   preferredReturnPolicy?: string;
+  communicationStyle?: string;
+  personaBrief?: string;
 }
 
 export interface BuyerAgentProfile {
@@ -71,6 +73,8 @@ export interface SellerAgentConfig {
   guardrails: string[];
   inventoryPressure?: InventoryPressure;
   customerSatisfactionTarget?: CustomerSatisfactionTarget;
+  communicationStyle?: string;
+  personaBrief?: string;
 }
 
 export interface ComparableListing {

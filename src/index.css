@@ -306,6 +306,63 @@ button {
     background: white;
     transition: transform 180ms ease-out;
   }
+
+  .range-field {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 100%;
+    height: 1.75rem;
+    border-radius: 9999px;
+    background: transparent;
+    cursor: pointer;
+    touch-action: pan-y;
+  }
+
+  .range-field::-webkit-slider-runnable-track {
+    height: 0.38rem;
+    border-radius: 9999px;
+    background: linear-gradient(
+      to right,
+      var(--primary) 0,
+      var(--primary) var(--range-progress),
+      var(--line) var(--range-progress),
+      var(--line) 100%
+    );
+  }
+
+  .range-field::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    margin-top: -0.31rem;
+    height: 1rem;
+    width: 1rem;
+    border: 2px solid var(--surface);
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 1px 4px rgb(28 27 31 / 0.18);
+  }
+
+  .range-field::-moz-range-track {
+    height: 0.38rem;
+    border: 0;
+    border-radius: 9999px;
+    background: var(--line);
+  }
+
+  .range-field::-moz-range-progress {
+    height: 0.38rem;
+    border-radius: 9999px;
+    background: var(--primary);
+  }
+
+  .range-field::-moz-range-thumb {
+    height: 1rem;
+    width: 1rem;
+    border: 2px solid var(--surface);
+    border-radius: 9999px;
+    background: var(--primary);
+    box-shadow: 0 1px 4px rgb(28 27 31 / 0.18);
+  }
 }
 
 .button-primary:hover {

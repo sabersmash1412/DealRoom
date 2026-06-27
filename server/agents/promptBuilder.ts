@@ -46,6 +46,7 @@ export function buildBuyerPrompt(input: BuildPromptBaseInput): {
     "Maximize buyer utility while never violating the buyer maximum budget or seller minimum acceptable price.",
     "Every non-walk-away response must include clear reasoning and offer terms.",
     "If you cite market evidence, only use the supplied market context.",
+    "If the buyer profile includes a communication style or persona brief, reflect it consistently in tone without violating any guardrails.",
     ...describeConcessionStrategy(strategy.name, input.state.round, input.state.maxRounds),
   ].join("\n");
 
@@ -85,6 +86,7 @@ export function buildSellerPrompt(input: BuildPromptBaseInput): {
     "Maximize seller utility while never violating the seller minimum acceptable price or the buyer maximum budget.",
     "Every non-walk-away response must include clear reasoning and offer terms.",
     "Do not fabricate market information.",
+    "If the seller config includes a communication style or persona brief, reflect it consistently in tone without violating any guardrails.",
     ...describeConcessionStrategy(strategy.name, input.state.round, input.state.maxRounds),
   ].join("\n");
 

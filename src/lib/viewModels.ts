@@ -84,6 +84,8 @@ export type Negotiation = {
   finalDeal: {
     itemPrice: number
     deliveryFee: number
+    originalAsk: number
+    returnPolicy: string
     protection: string
     pickupWindow: string
     inspection: string
@@ -599,6 +601,8 @@ export function mapBranchToNegotiation(branch: NegotiationBranchView): Negotiati
     finalDeal: {
       itemPrice: branch.finalDeal?.finalPrice ?? currentOffer,
       deliveryFee: 0,
+      originalAsk: branch.state.snapshot.listing.price,
+      returnPolicy: branch.state.snapshot.listing.returnPolicy ?? 'No explicit return policy saved.',
       protection: branch.finalDeal?.verified
         ? 'Mediator checks and reservation validation passed.'
         : 'Pending final backend approval.',
@@ -659,6 +663,8 @@ export function createPlaceholderNegotiation(listing: Listing): Negotiation {
     finalDeal: {
       itemPrice: listing.price,
       deliveryFee: 0,
+      originalAsk: listing.price,
+      returnPolicy: 'No return policy loaded.',
       protection: 'No final deal yet.',
       pickupWindow: listing.shipping,
       inspection: 'No inspection policy loaded.',
