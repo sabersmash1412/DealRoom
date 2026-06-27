@@ -1,8 +1,24 @@
 import type { MarketContextSnapshot } from "../../src/shared/negotiation.js";
 import { getConfig } from "../config.js";
 
+type ExaSearchResult = {
+  title?: string;
+  url?: string;
+  summary?: string;
+  text?: string;
+};
+
+type PriceCandidate = {
+  index: number;
+  score: number;
+  source: "summary" | "text" | "title";
+  value: number;
+};
+
 export class ExaService {
   private readonly config = getConfig();
+  private static readonly currencyPattern =
+    /(?:[$£€]\s?\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?|\d{1,3}(?:,\d{3})*(?:\.\d{1,2})?\s?(?:[$£€]|USD|GBP|EUR))/gi;
 
   async fetchMarketContext(input: {
     title: string;
@@ -56,29 +72,29 @@ export class ExaService {
         return this.buildFallbackContext(input);
       }
 
-      const payload = (await response.json()) as {
-        results?: Array<{
-          title?: string;
-          url?: string;
-          summary?: string;
-          text?: string;
-        }>;
-      };
+      const payload = (await response.json()) as { results?: ExaSearchResult[] };
 
       console.info("[ExaService] Exa search API response payload.", payload);
 
-      const extractedPrices = (payload.results ?? [])
-        .map((result) => {
-          const combinedText = [result.title, result.summary, result.text].filter(Boolean).join(" ");
-          const match = combinedText.match(/\$?\b(\d{2,6})\b/g);
-          if (!match || match.length === 0) {
-            return null;
+      const comparableResults = (payload.results ?? [])
+        .map((result, index) => {
+          const price = this.extractComparablePrice(result);
+          if (price === null) {
+            console.info("[ExaService] Skipping Exa result without a usable market price.", {
+              index,
+              title: result.title ?? null,
+              url: result.url ?? null,
+            });
           }
 
-          const candidate = Number(match[0].replace(/[^\d]/g, ""));
-          return Number.isFinite(candidate) ? candidate : null;
+          return {
+            price,
+            result,
+          };
         })
-        .filter((value): value is number => value !== null);
+        .filter((entry): entry is { price: number; result: ExaSearchResult } => entry.price !== null);
+
+      const extractedPrices = comparableResults.map((entry) => entry.price);
 
       if (extractedPrices.length === 0) {
         console.warn("[ExaService] Exa response did not yield any usable prices. Using fallback market context.", {
@@ -99,9 +115,9 @@ export class ExaService {
         averagePrice,
         lowestListing,
         highestListing,
-        comparableListings: (payload.results ?? []).slice(0, 4).map((result, index) => ({
+        comparableListings: comparableResults.slice(0, 4).map(({ result, price }, index) => ({
           title: result.title ?? `Comparable ${index + 1}`,
-          price: extractedPrices[index] ?? averagePrice,
+          price,
           url: result.url ?? null,
           source: "exa",
         })),
@@ -141,5 +157,89 @@ export class ExaService {
       generatedAt: new Date().toISOString(),
       source: "fallback",
     };
+  }
+
+  private extractComparablePrice(result: ExaSearchResult): number | null {
+    const candidates = [
+      ...this.extractPriceCandidates(result.summary, "summary"),
+      ...this.extractPriceCandidates(result.text, "text"),
+      ...this.extractPriceCandidates(result.title, "title"),
+    ];
+
+    if (candidates.length === 0) {
+      return null;
+    }
+
+    candidates.sort((left, right) => {
+      if (right.score !== left.score) {
+        return right.score - left.score;
+      }
+
+      if (right.value !== left.value) {
+        return right.value - left.value;
+      }
+
+      return left.index - right.index;
+    });
+
+    return Math.round(candidates[0].value);
+  }
+
+  private extractPriceCandidates(
+    content: string | undefined,
+    source: PriceCandidate["source"],
+  ): PriceCandidate[] {
+    if (!content) {
+      return [];
+    }
+
+    return Array.from(content.matchAll(ExaService.currencyPattern))
+      .map((match) => {
+        const rawValue = match[0];
+        const value = this.parseCurrencyValue(rawValue);
+        if (value === null) {
+          return null;
+        }
+
+        const index = match.index ?? 0;
+        const prefix = content.slice(Math.max(0, index - 24), index);
+        const suffix = content.slice(index + rawValue.length, Math.min(content.length, index + rawValue.length + 24));
+        let score = source === "title" ? 0 : 2;
+
+        if (/\b(price|priced|pricing|listing|listed|market|deal|cost|sale|sell)\b/i.test(prefix)) {
+          score += 4;
+        }
+
+        if (/\b(price|priced|pricing|listing|listed|market|deal|cost|sale|sell)\b/i.test(suffix)) {
+          score += 1;
+        }
+
+        if (/\b(from|at|around|shows?)\b/i.test(prefix)) {
+          score += 1;
+        }
+
+        if (/\b(month|monthly|\/mo|contract)\b/i.test(`${prefix} ${suffix}`)) {
+          score -= 6;
+        }
+
+        if (/\b(new price|trade-?in|msrp|retail)\b/i.test(prefix)) {
+          score -= 8;
+        }
+
+        return {
+          index,
+          score,
+          source,
+          value,
+        };
+      })
+      .filter((candidate): candidate is PriceCandidate => candidate !== null);
+  }
+
+  private parseCurrencyValue(rawValue: string): number | null {
+    const normalized = rawValue.replace(/[$£€]|USD|GBP|EUR/gi, "").replace(/,/g, "").trim();
+    const value = Number.parseFloat(normalized);
+
+    return Number.isFinite(value) && value > 0 ? value : null;
   }
 }
