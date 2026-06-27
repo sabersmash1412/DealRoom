@@ -10,9 +10,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
-  // If you use Prisma Migrate or db push, prefer a direct non-pooled Supabase URL.
-  // directUrl = env("DIRECT_URL")
 }
 
 model Listing {
@@ -22,6 +19,7 @@ model Listing {
   price       Int
   imageUrl    String?
   condition   String
+  returnPolicy String?
   sellerId    String
   seller      Seller   @relation(fields: [sellerId], references: [id])
   createdAt   DateTime @default(now())
@@ -36,6 +34,7 @@ model Seller {
   minPrice    Int
   inventory   Int
   deliveryDays Int
+  agentConfig Json?
   createdAt   DateTime @default(now())
 
   listings Listing[]
@@ -44,6 +43,7 @@ model Seller {
 
 model Negotiation {
   id               String   @id @default(cuid())
+  campaignId       String?
   listingId         String
   sellerId          String
   buyerBudget       Int
@@ -53,6 +53,7 @@ model Negotiation {
   priority          String
   status            String   @default("active")
   marketContext     Json?
+  engineState       Json?
   createdAt         DateTime @default(now())
   updatedAt         DateTime @updatedAt
 
@@ -62,6 +63,8 @@ model Negotiation {
   messages    NegotiationMessage[]
   auditEvents AuditEvent[]
   finalDeal   FinalDeal?
+
+  @@index([campaignId])
 }
 
 model NegotiationMessage {
@@ -101,4 +104,17 @@ model FinalDeal {
   createdAt      DateTime @default(now())
 
   negotiation Negotiation @relation(fields: [negotiationId], references: [id], onDelete: Cascade)
+}
+
+model BuyerAgentProfile {
+  id               String   @id @default(cuid())
+  userId           String   @unique
+  displayName      String?
+  utilityWeights   Json
+  reservationValue Json
+  strategy         String
+  guardrails       Json?
+  preferences      Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 }
