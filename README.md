@@ -1,4 +1,4 @@
-# DealRoom
+# DealRoom - Built during 'Sup Hackathon 2026
 
 DealRoom is a governed multi-agent negotiation platform for online marketplaces. Buyer agents and seller agents negotiate on behalf of humans, while a mediator agent validates each step so the final deal is transparent, explainable, and still approved by the user.
 
