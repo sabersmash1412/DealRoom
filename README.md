@@ -1,75 +1,85 @@
-# React + TypeScript + Vite
+# DealRoom
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+DealRoom is a governed multi-agent negotiation platform for online marketplaces. Buyer agents and seller agents negotiate on behalf of humans, while a mediator agent validates each step so the final deal is transparent, explainable, and still approved by the user.
 
-Currently, two official plugins are available:
+The goal is not to build another AI chat interface. DealRoom is a marketplace workflow where AI runs quietly in the background to make buying and selling faster, safer, and less repetitive.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What It Does
 
-## React Compiler
+- Lets buyers browse marketplace listings and start structured negotiations.
+- Uses buyer and seller agent profiles to define budgets, utility weights, reservation values, strategies, and guardrails.
+- Runs autonomous buyer-agent and seller-agent negotiation turns.
+- Uses a mediator agent to validate offers before they reach the user interface.
+- Grounds negotiations with Exa-powered market context instead of relying only on model guesses.
+- Persists listings, sellers, agent profiles, negotiation branches, messages, audit events, and final deals in Postgres through Prisma.
+- Streams negotiation state back to the frontend so users can follow the process live.
+- Keeps humans in control by requiring final deal approval.
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+## Why It Matters
 
-## Expanding the ESLint configuration
+Online marketplace negotiations are slow and low-trust. Buyers get ghosted, sellers repeat the same negotiation over and over, and platforms lose transactions when conversations stall.
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+DealRoom reframes negotiation as governed autonomous commerce:
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-
+```text
+Buyer Agent -> Negotiation Engine -> Seller Agent -> Mediator Agent -> Verified Deal
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+That governance layer matters because AI-to-AI commerce only works when outcomes are inspectable, policy-aware, and bounded by human approval.
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Tech Stack
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+- React 19
+- TypeScript
+- Vite
+- Tailwind CSS
+- Node.js HTTP server
+- Prisma 7
+- Postgres / Supabase
+- OpenAI Responses API
+- Exa Search API
 
+## Architecture
+
+```text
+Frontend
+  |
+  v
+DealRoom API
+  |
+  v
+Negotiation Orchestrator
+  |
+  +--> Buyer Agent
+  +--> Seller Agent
+  +--> Mediator Agent
+  |
+  +--> OpenAI reasoning
+  +--> Exa market search
+  +--> Prisma / Postgres state
+  |
+  v
+Live negotiation timeline + final deal approval
+```
+
+## Project Structure
+
+```text
+.
+├── src/
+│   ├── App.tsx                  # Main React experience
+│   ├── lib/                     # API client and view models
+│   └── shared/                  # Shared negotiation types
+├── server/
+│   ├── agents/                  # Buyer, seller, and mediator agents
+│   ├── domain/                  # Negotiation engine and utility logic
+│   ├── repositories/            # Prisma-backed data access
+│   ├── routes/                  # API routes
+│   └── services/                # OpenAI, Exa, and event bus services
+├── prisma/
+│   ├── schema.prisma            # Database schema
+│   └── migrations/              # Database migrations
+├── PRODUCT.md                   # Product direction
+├── DESIGN.md                    # Design system notes
+└── vercel.json                  # Vercel frontend config
 ```
